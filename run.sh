@@ -1,0 +1,1 @@
+python2 seqGAN.py --mode=train --data_path ../model_data/gan/train.bin --vocab_path ../model_data/gan/vocab --log_root ../log/ --seqgan True --max_dec_steps 100 --max_enc_steps 400 --rollout 24 --pretrain_dis_data_path ../model_data/gan/discriminator_train_data.npz --batch_size 24 --pretrain_discriminator True --lr 0.01
