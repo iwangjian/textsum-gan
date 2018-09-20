@@ -1,4 +1,4 @@
-#-*-coding:utf-8 -*-
+# -*-coding:utf-8 -*-
 from __future__ import print_function
 import tensorflow as tf
 import os
@@ -14,6 +14,7 @@ from data import Vocab
 from generator import SummarizationModel
 from discriminator import Discriminator
 from data_loader import Dis_dataloader
+from decode import BeamSearchDecoder
 import util
 
 from rouge import Rouge
@@ -37,7 +38,7 @@ tf.app.flags.DEFINE_string('data_path', '',
 tf.app.flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
 
 # Important settings
-tf.app.flags.DEFINE_string('mode', 'train', 'must be one of train/eval/decode')
+tf.app.flags.DEFINE_string('mode', 'train', 'must be one of train/decode')
 tf.app.flags.DEFINE_boolean('single_pass', False,
                             'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, \
                             i.e. take the current checkpoint, and use it to produce one summary for each example in \
@@ -68,7 +69,7 @@ tf.app.flags.DEFINE_integer('vocab_size', 50000,
                             'Size of vocabulary. These will be read from the vocabulary file in order. \
                             If the vocabulary file contains fewer words than this number, or if this number is \
                             set to 0, will take all words in the vocabulary file.')
-tf.app.flags.DEFINE_float('lr', 0.15, 'learning rate')
+tf.app.flags.DEFINE_float('lr', 0.01, 'learning rate')
 tf.app.flags.DEFINE_float('adagrad_init_acc', 0.1, 'initial accumulator value for Adagrad')
 tf.app.flags.DEFINE_float('rand_unif_init_mag', 0.02, 'magnitude for lstm cells random uniform inititalization')
 tf.app.flags.DEFINE_float('trunc_norm_init_std', 1e-4, 'std of trunc norm init, used for initializing everything else')
@@ -76,10 +77,10 @@ tf.app.flags.DEFINE_float('max_grad_norm', 2.0, 'for gradient clipping')
 
 # Pointer-generator or baseline model
 tf.app.flags.DEFINE_boolean('pointer_gen', True, 'If True, use pointer-generator model. If False, use baseline model.')
-tf.app.flags.DEFINE_boolean('seqgan', False, 'If False disable seqgan')
+tf.app.flags.DEFINE_boolean('seqgan', True, 'If False disable seqgan')
 tf.app.flags.DEFINE_boolean('pretrain_discriminator', True, 'If False disable seqgan')
 
-tf.app.flags.DEFINE_integer('rollout', 2, 'Size of rollout number')
+tf.app.flags.DEFINE_integer('rollout', 8, 'Size of rollout number')
 tf.app.flags.DEFINE_integer('basegpu', 0, 'base gpu index')
 
 
@@ -112,10 +113,6 @@ config = tf.ConfigProto(allow_soft_placement=True)
 config.gpu_options.allow_growth = True
 
 
-#pretrain_dis_data_path = "/home/saliency/summary/cnn-dailymail/finished_files/Dis_train_data.npz"
-# FLAGS.dis_batch_sizepretrain_dis_data_path = "/Users/likilew/Desktop/sumGAN_datacenter/Dis_train_data.npz"
-
-
 def restore_best_model():
     """Load bestmodel file from eval directory, add variables for adagrad, and save to train directory"""
     tf.logging.info("Restoring bestmodel for training...")
@@ -143,7 +140,7 @@ def restore_best_model():
 
 
 def build_seqgan_graph(hps, vocab):
-    with tf.device('/gpu:1'):
+    with tf.device('/gpu:0'):
         generator = SummarizationModel(hps, vocab)
         print('Build Generator Graph...')
         generator.build_graph()
@@ -173,8 +170,8 @@ def build_seqgan_graph(hps, vocab):
 def setup_training(generator, discriminator, generator_batcher, discriminator_batcher):
     """Does setup before starting training (run_training)"""
     train_dir = os.path.join(FLAGS.log_root, "train")
-    if not os.path.exists(train_dir): os.makedirs(train_dir)
-    # os.environ['CUDA_VISIBLE_DEVICES'] = '2, 3'
+    if not os.path.exists(train_dir):
+        os.makedirs(train_dir)
 
     if FLAGS.restore_best_model:
         restore_best_model()
@@ -201,9 +198,9 @@ def setup_training(generator, discriminator, generator_batcher, discriminator_ba
         tf.logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
         sv.stop()
 
+
 def pre_train_discriminator(discriminator, sess_context_manager):
     #####################  Pretrain Discriminator ##################################
-    # path : /home/saliency/summary/log/pretrained_model_tf1.2.1/decode_test_400maxenc_4beam_35mindec_120maxdec_ckpt-238410/reference
     dis_train_data_loader = Dis_dataloader(FLAGS.dis_batch_size, FLAGS.vocab_size)
     dis_test_data_loader = Dis_dataloader(FLAGS.dis_batch_size, FLAGS.vocab_size)
 
@@ -220,7 +217,7 @@ def pre_train_discriminator(discriminator, sess_context_manager):
     #############      Prepare Train and Eval data  ##############################
 
     for i in range(len(pos_summary)):
-        if i < 9000:
+        if i < 143800:
             positive_train_summary.append(pos_summary[i][:FLAGS.max_dec_steps])
             negative_train_summary.append(neg_summary[i][:FLAGS.max_dec_steps])
         else:
@@ -342,29 +339,54 @@ def run_training(generator, discriminator, generator_batcher, discriminator_batc
                         new_sent = np.concatenate([sent[:ind + 1], np.ones(100 - ind - 1)])
                         feed_output_token.append(new_sent)
                     else:
-                        feed_output_token.append(sent)
+                        new_sent = np.array(sent, dtype=np.int32)
+                        feed_output_token.append(new_sent)
+
                 feed_output_token = np.array(feed_output_token)
-                clip_index = np.where(feed_output_token > FLAGS.vocab_size - 1)
-                index_x = clip_index[0]; index_y = clip_index[1]
+                feed_output_token = feed_output_token.reshape((len(feed_output_token), -1))
+                print("feed_out_token.shape:", feed_output_token.shape)
+                '''
+                clip_index = np.where(feed_output_token > FLAGS.vocab_size-1)
+                index_x = clip_index[0]
+                index_y = clip_index[1]
                 for i in range(len(index_x)):
                     feed_output_token[index_x[i]][index_y[i]] = 0
+                '''
+                if feed_output_token.shape[1] > 1:
+                    for i in range(len(feed_output_token)):
+                        clip_index = np.where(np.array(feed_output_token[i]) > FLAGS.vocab_size - 1)
+                        for idx in clip_index:
+                            feed_output_token[i][idx] = 0
 
-                ypred_for_auc = []
+                    # update
+                    ypred_for_auc = []
+                    for feed_output_token_small in np.split(feed_output_token, FLAGS.rollout):
+                        feed = {discriminator.input_x: feed_output_token_small,
+                                discriminator.dropout_keep_prob: 1.0
+                                }
+                        # ypred_for_auc: [rollout_num * seqlen(this is number of roll) * batch_size, 2]
+                        ypred_for_auc.append(sess.run(discriminator.ypred_for_auc, feed))
+                    ypred_for_auc = np.concatenate(ypred_for_auc)
+                    ypred = np.array([item[1] for item in ypred_for_auc])
+                    framed_yred = np.reshape(ypred, [FLAGS.rollout, given_number_of_rollout, FLAGS.batch_size])
+                    rewards = np.transpose(np.sum(framed_yred, 0)) / (
+                                1.0 * FLAGS.rollout)  # [batch_size, output_max_len// 20]
+                    if np.std(rewards) != 0.:
+                        rewards = (rewards - np.mean(rewards)) / np.std(rewards)
+                    D_rewards = np.zeros((FLAGS.batch_size, FLAGS.max_dec_steps))
+                    print("rewards.shape:", rewards.shape)
 
-                for feed_output_token_small in np.split(feed_output_token, FLAGS.rollout):
-                    feed = {discriminator.input_x: feed_output_token_small, discriminator.dropout_keep_prob: 1.0}
-                # ypred_for_auc: [rollout_num * seqlen(this is number of roll) * batch_size, 2]
-                    ypred_for_auc.append(sess.run(discriminator.ypred_for_auc, feed))
-                ypred_for_auc = np.concatenate(ypred_for_auc)
-                ypred = np.array([item[1] for item in ypred_for_auc])
-                framed_yred = np.reshape(ypred, [FLAGS.rollout, given_number_of_rollout, FLAGS.batch_size])
-                rewards = np.transpose(np.sum(framed_yred, 0)) / (1.0 * FLAGS.rollout)  # [batch_size, output_max_len// 20]
-                if np.std(rewards) != 0.:
-                    rewards = (rewards - np.mean(rewards))/np.std(rewards)
-                D_rewards = np.zeros([FLAGS.batch_size, FLAGS.max_dec_steps])
-                for count, i in enumerate(range(1, 60, 6)):
-                    D_rewards[:, i] = rewards[:, count]
+                    for count, i in enumerate(
+                            range(1, FLAGS.max_dec_steps, int(FLAGS.max_dec_steps / rewards.shape[1]))):
+                        D_rewards[:, i] = rewards[:, count]
 
+                else:
+                    tmp = []
+                    for i in range(len(feed_output_token)):
+                        tmp.append(feed_output_token[i][0])
+                    feed_output_token = np.array(tmp).copy()
+                    print("feed-new:", feed_output_token.shape)
+                    print("Filter out!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
 
             # Train the discriminator
             print("Start to train the Discriminator!")
@@ -429,12 +451,21 @@ def main(unused_argv):
 
     hps, vocab = prepare_hps_vocab()
 
-    generator, discriminator = build_seqgan_graph(hps, vocab)
-
     generator_batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
     discriminator_batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
 
-    setup_training(generator, discriminator, generator_batcher, discriminator_batcher)
+    if hps.mode == 'train':
+        generator, discriminator = build_seqgan_graph(hps, vocab)
+        setup_training(generator, discriminator, generator_batcher, discriminator_batcher)
+    elif hps.mode == 'decode':
+        # The model is configured with max_dec_steps=1 because we only ever run one step of
+        # the decoder at a time (to do beam search).
+        decode_model_hps = hps._replace(max_dec_steps=1)
+        generator = SummarizationModel(decode_model_hps, vocab)
+        decoder = BeamSearchDecoder(generator, generator_batcher, vocab)
+        decoder.decode()
+    else:
+        raise ValueError("The 'mode' flag must be one of train/decode")
 
 
 if __name__ == '__main__':
