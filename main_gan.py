@@ -8,15 +8,12 @@ import numpy as np
 from tqdm import tqdm
 from collections import namedtuple
 from sklearn.metrics import accuracy_score
-
+import util
 from batcher import Batcher
 from data import Vocab
 from generator import SummarizationModel
 from discriminator import Discriminator
-from data_loader import Dis_dataloader
-from decode import BeamSearchDecoder
-import util
-
+from data_loader import Dataloader
 from rouge import Rouge
 
 tf.logging.set_verbosity(tf.logging.INFO)
@@ -142,8 +139,7 @@ def restore_best_model():
 def build_seqgan_graph(hps, vocab):
     with tf.device('/gpu:0'):
         generator = SummarizationModel(hps, vocab)
-        print('Build Generator Graph...')
-        generator.build_graph()
+
 
     #########################################################################################
     #  Discriminator  Hyper-parameters
