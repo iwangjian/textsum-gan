@@ -1,5 +1,4 @@
 # -*-coding:utf-8 -*-
-from __future__ import print_function
 import tensorflow as tf
 import os
 import time
@@ -11,31 +10,24 @@ from sklearn.metrics import accuracy_score
 import util
 from batcher import Batcher
 from data import Vocab
-from generator import SummarizationModel
+from generator import Generator
 from discriminator import Discriminator
 from data_loader import Dataloader
 from rouge import Rouge
 
 tf.logging.set_verbosity(tf.logging.INFO)
-
-#########################################################################################
-#  Basic Training Parameters
-#########################################################################################
-TOTAL_BATCH = 200
-PRE_EPOCH_NUM = 2  # pretrain G
-
-#########################################################################################
-#  Generator Parameters
-#########################################################################################
+# GPU config
+config = tf.ConfigProto(allow_soft_placement=True)
+config.gpu_options.allow_growth = True
 FLAGS = tf.app.flags.FLAGS
 
 # Where to find data
-tf.app.flags.DEFINE_string('data_path', '',
-                           'Path expression to tf.Example datafiles. Can include wildcards to access multiple datafiles.')
+tf.app.flags.DEFINE_string('data_path', '', 'Path expression to tf.Example datafiles.\
+                           Can include wildcards to access multiple datafiles.')
 tf.app.flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
 
 # Important settings
-tf.app.flags.DEFINE_string('mode', 'train', 'must be one of train/decode')
+tf.app.flags.DEFINE_string('mode', 'pretrain', 'must be one of pretrain/train/decode')
 tf.app.flags.DEFINE_boolean('single_pass', False,
                             'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, \
                             i.e. take the current checkpoint, and use it to produce one summary for each example in \
@@ -45,9 +37,9 @@ tf.app.flags.DEFINE_boolean('single_pass', False,
                              indefinitely.')
 
 # Where to save output
-tf.app.flags.DEFINE_string('log_root', '', 'Root directory for all logging.')
-tf.app.flags.DEFINE_string('exp_name', '',
-                           'Name for experiment. Logs will be saved in a directory with this name, under log_root.')
+tf.app.flags.DEFINE_string('log_root', 'log', 'Root directory for all logging.')
+tf.app.flags.DEFINE_string('exp_name', 'textsum-gan', 'Name for experiment. \
+                             Logs will be saved in a directory with this name, under log_root.')
 
 tf.app.flags.DEFINE_string('pretrain_dis_data_path', 'Dis_train_data.npz','path for the pretrain dis')
 
@@ -57,8 +49,8 @@ tf.app.flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
 tf.app.flags.DEFINE_integer('batch_size', 16, 'minibatch size')
 tf.app.flags.DEFINE_integer('dis_batch_size', 256, 'batch size for pretrain discriminator')
 
-tf.app.flags.DEFINE_integer('max_enc_steps', 550, 'max timesteps of encoder (max source text tokens)')
-tf.app.flags.DEFINE_integer('max_dec_steps', 60, 'max timesteps of decoder (max summary tokens)')
+tf.app.flags.DEFINE_integer('max_enc_steps', 400, 'max timesteps of encoder (max source text tokens)')
+tf.app.flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
 tf.app.flags.DEFINE_integer('beam_size', 4, 'beam size for beam search decoding.')
 tf.app.flags.DEFINE_integer('min_dec_steps', 3,
                             'Minimum sequence length of generated summary. Applies only for beam search decoding mode')
@@ -77,9 +69,8 @@ tf.app.flags.DEFINE_boolean('pointer_gen', True, 'If True, use pointer-generator
 tf.app.flags.DEFINE_boolean('seqgan', True, 'If False disable seqgan')
 tf.app.flags.DEFINE_boolean('pretrain_discriminator', True, 'If False disable seqgan')
 
-tf.app.flags.DEFINE_integer('rollout', 8, 'Size of rollout number')
+tf.app.flags.DEFINE_integer('rollout', 24, 'Size of rollout number')
 tf.app.flags.DEFINE_integer('basegpu', 0, 'base gpu index')
-
 
 # Coverage hyperparameters
 tf.app.flags.DEFINE_boolean('coverage', False,
@@ -100,14 +91,15 @@ tf.app.flags.DEFINE_boolean('restore_best_model', False,
                             'Restore the best model in the eval/ dir and save it in the train/ dir, ready to be \
                              used for further training. Useful for early stopping, or if your training checkpoint \
                               has become corrupted with e.g. NaN values.')
-
-# Debugging. See https://www.tensorflow.org/programmers_guide/debugger
 tf.app.flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
 
 
-# GPU config, if set log_device_placement=True, all the variables will be copied to GPU, otherwise CPU
-config = tf.ConfigProto(allow_soft_placement=True)
-config.gpu_options.allow_growth = True
+
+#########################################################################################
+#  Basic Training Parameters
+#########################################################################################
+TOTAL_BATCH = 200
+PRE_EPOCH_NUM = 2  # pretrain G
 
 
 def restore_best_model():
@@ -137,21 +129,15 @@ def restore_best_model():
 
 
 def build_seqgan_graph(hps, vocab):
+    print('Build Generator Graph...')
     with tf.device('/gpu:0'):
-        generator = SummarizationModel(hps, vocab)
+        generator = Generator(hps, vocab)
 
-
-    #########################################################################################
-    #  Discriminator  Hyper-parameters
-    #########################################################################################
-
-    dis_filter_sizes = [2, 3, 4, 5]
-    dis_num_filters = [100, 100, 100, 100]
-    dis_l2_reg_lambda = 0.2
-
-    # the vocab of dis = gen?
     print('Build Discriminator Graph...')
     with tf.device('/gpu:0'):
+        dis_filter_sizes = [2, 3, 4, 5]
+        dis_num_filters = [100, 100, 100, 100]
+        dis_l2_reg_lambda = 0.2
         discriminator = Discriminator(sequence_length=hps.max_dec_steps,
                                       num_classes=2,
                                       vocab_size=FLAGS.vocab_size,
@@ -163,7 +149,7 @@ def build_seqgan_graph(hps, vocab):
     return generator, discriminator
 
 
-def setup_training(generator, discriminator, generator_batcher, discriminator_batcher):
+def pretrain_generator(generator, generator_batcher, summary_writer, sess_context_manager):
     """Does setup before starting training (run_training)"""
     train_dir = os.path.join(FLAGS.log_root, "train")
     if not os.path.exists(train_dir):
@@ -171,34 +157,30 @@ def setup_training(generator, discriminator, generator_batcher, discriminator_ba
 
     if FLAGS.restore_best_model:
         restore_best_model()
-    saver = tf.train.Saver(max_to_keep=5)  # keep 3 checkpoints at a time
 
-    sv = tf.train.Supervisor(logdir=train_dir,
-                             is_chief=True,
-                             saver=saver,
-                             summary_op=None,
-                             save_summaries_secs=60,  # save summaries for tensorboard every 60 secs
-                             save_model_secs=60,  # checkpoint every 60 secs
-                             global_step=generator.global_step)
-    summary_writer = sv.summary_writer
-    tf.logging.info("Preparing or waiting for session...")
-    sess_context_manager = sv.prepare_or_wait_for_session(config=util.get_config())
-    tf.logging.info("Created session.")
-    try:
-        if FLAGS.pretrain_discriminator:
-            pre_train_discriminator(discriminator, sess_context_manager)
+    with sess_context_manager as sess:
+        D_rewards = np.zeros((FLAGS.batch_size, FLAGS.max_dec_steps))
+        rouge_rewards = np.zeros((FLAGS.batch_size, 1))
+        batch = generator_batcher.next_batch()
+        batch.batch_reward = D_rewards
+        batch.batch_rouge_reward = rouge_rewards
+        tf.logging.info('running pre-training step...')
+        t0 = time.time()
+        result_train = generator.run_train_step(sess, batch)
 
-        run_training(generator, discriminator, generator_batcher, discriminator_batcher, summary_writer, sess_context_manager)
-        #model, batcher, sess_context_manager, sv, summary_writer)  # this is an infinite loop until interrupted
-    except KeyboardInterrupt:
-        tf.logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
-        sv.stop()
+        t1 = time.time()
+        tf.logging.info('seconds for training step: %.3f', t1 - t0)
+        loss = result_train['loss']
+        tf.logging.info('Generator train loss: %f', loss)  # print the loss to screen
+
+        summaries = result_train['summaries']
+        train_step = result_train['global_step']
+        summary_writer.add_summary(summaries, train_step)  # write the summaries
 
 
-def pre_train_discriminator(discriminator, sess_context_manager):
-    #####################  Pretrain Discriminator ##################################
-    dis_train_data_loader = Dis_dataloader(FLAGS.dis_batch_size, FLAGS.vocab_size)
-    dis_test_data_loader = Dis_dataloader(FLAGS.dis_batch_size, FLAGS.vocab_size)
+def pretrain_discriminator(discriminator, sess_context_manager):
+    dis_train_data_loader = Dataloader(FLAGS.dis_batch_size, FLAGS.vocab_size)
+    dis_test_data_loader = Dataloader(FLAGS.dis_batch_size, FLAGS.vocab_size)
 
     print("Pre-train Discriminator")
 
@@ -320,7 +302,8 @@ def run_training(generator, discriminator, generator_batcher, discriminator_batc
                 t1 = time.time()
                 tf.logging.info('seconds for rollout step: %.3f', t1 - t0)
 
-                rollout_output = result_rollout['rollout_token']  # shape [rollout_num, seqlen(this is number of roll), batch_size, seq_len]
+                # shape [rollout_num, seqlen(this is number of roll), batch_size, seq_len]
+                rollout_output = result_rollout['rollout_token']
                 given_number_of_rollout = rollout_output.shape[1]
 
                 # calculate D_reward
@@ -410,7 +393,7 @@ def run_training(generator, discriminator, generator_batcher, discriminator_batc
                     positive_examples.append(ele)
                 for ele in output_argmax_summary:
                     negative_examples.append(ele)
-                dis_data_loader = Dis_dataloader(FLAGS.batch_size, FLAGS.vocab_size)
+                dis_data_loader = Dataloader(FLAGS.batch_size, FLAGS.vocab_size)
 
                 max_epoch = 3
 
@@ -427,12 +410,71 @@ def run_training(generator, discriminator, generator_batcher, discriminator_batc
                         _ = sess.run(discriminator.train_op, feed)
 
 
+def setup_pretrain(generator, discriminator, generator_batcher, discriminator_batcher):
+    """Does setup before starting training (run_training)"""
+    train_dir = os.path.join(FLAGS.log_root, "train")
+    if not os.path.exists(train_dir):
+        os.makedirs(train_dir)
+
+    if FLAGS.restore_best_model:
+        restore_best_model()
+    # keep 4 checkpoints at a time
+    saver = tf.train.Saver(max_to_keep=4)
+    sv = tf.train.Supervisor(logdir=train_dir,
+                             is_chief=True,
+                             saver=saver,
+                             summary_op=None,
+                             save_summaries_secs=60,  # save summaries for tensorboard every 60 secs
+                             save_model_secs=60,  # checkpoint every 60 secs
+                             global_step=generator.global_step)
+    summary_writer = sv.summary_writer
+    tf.logging.info("Preparing or waiting for session...")
+    sess_context_manager = sv.prepare_or_wait_for_session(config=util.get_config())
+    tf.logging.info("Created session.")
+    try:
+        pretrain_generator(generator, generator_batcher, summary_writer, sess_context_manager)
+
+    except KeyboardInterrupt:
+        tf.logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
+        sv.stop()
+
+
+def setup_training(generator, discriminator, generator_batcher, discriminator_batcher):
+    """Does setup before starting training (run_training)"""
+    train_dir = os.path.join(FLAGS.log_root, "train")
+    if not os.path.exists(train_dir):
+        os.makedirs(train_dir)
+
+    if FLAGS.restore_best_model:
+        restore_best_model()
+    # keep 4 checkpoints at a time
+    saver = tf.train.Saver(max_to_keep=4)
+    sv = tf.train.Supervisor(logdir=train_dir,
+                             is_chief=True,
+                             saver=saver,
+                             summary_op=None,
+                             save_summaries_secs=60,  # save summaries for tensorboard every 60 secs
+                             save_model_secs=60,  # checkpoint every 60 secs
+                             global_step=generator.global_step)
+    summary_writer = sv.summary_writer
+    tf.logging.info("Preparing or waiting for session...")
+    sess_context_manager = sv.prepare_or_wait_for_session(config=util.get_config())
+    tf.logging.info("Created session.")
+    try:
+        run_training(generator, discriminator, generator_batcher, discriminator_batcher,
+                     summary_writer, sess_context_manager)
+
+    except KeyboardInterrupt:
+        tf.logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
+        sv.stop()
+
+
 def prepare_hps_vocab():
     hparam_list = ['mode', 'lr', 'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm',
                    'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps', 'coverage', 'cov_loss_wt',
                    'pointer_gen', 'seqgan', 'rollout']
     hps_dict = {}
-    for key, val in FLAGS.__flags.iteritems():  # for each flag
+    for key, val in FLAGS.__flags.items():  # for each flag
         if key in hparam_list:  # if it's in the list
             hps_dict[key] = val  # add it to the dict
     hps = namedtuple("HParams", hps_dict.keys())(**hps_dict)
@@ -446,20 +488,21 @@ def main(unused_argv):
         raise Exception("Problem with flags: %s" % unused_argv)
 
     hps, vocab = prepare_hps_vocab()
-
     generator_batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
     discriminator_batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
+    generator, discriminator = build_seqgan_graph(hps, vocab)
 
+    if hps.mode == 'pretrain':
+        setup_pretrain(generator, discriminator, generator_batcher, discriminator_batcher)
     if hps.mode == 'train':
-        generator, discriminator = build_seqgan_graph(hps, vocab)
         setup_training(generator, discriminator, generator_batcher, discriminator_batcher)
     elif hps.mode == 'decode':
         # The model is configured with max_dec_steps=1 because we only ever run one step of
         # the decoder at a time (to do beam search).
         decode_model_hps = hps._replace(max_dec_steps=1)
-        generator = SummarizationModel(decode_model_hps, vocab)
-        decoder = BeamSearchDecoder(generator, generator_batcher, vocab)
-        decoder.decode()
+        generator = Generator(decode_model_hps, vocab)
+        #decoder = BeamSearchDecoder(generator, generator_batcher, vocab)
+        #decoder.decode()
     else:
         raise ValueError("The 'mode' flag must be one of train/decode")
 

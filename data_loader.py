@@ -1,9 +1,7 @@
-from __future__ import print_function
-from random import shuffle
 import numpy as np
-from tqdm import tqdm
 
-class Dis_dataloader():
+
+class Dataloader():
     def __init__(self, batch_size, vocab_size):
         self.batch_size = batch_size
         self.sentences = np.array([])

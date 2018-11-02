@@ -39,7 +39,7 @@ def highway(input_, size, num_layers=1, bias=-2.0, f=tf.nn.relu, scope='Highway'
     z = t * g(Wy + b) + (1 - t) * y
     where g is nonlinearity, t is transform gate, and (1 - t) is carry gate.
     """
-
+    output = None
     with tf.variable_scope(scope):
         for idx in range(num_layers):
             g = f(linear(input_, size, scope='highway_lin_%d' % idx))
@@ -58,8 +58,7 @@ class Discriminator(object):
     Uses an embedding layer, followed by a convolutional, max-pooling and softmax layer.
     """
 
-    def __init__(
-            self, sequence_length, num_classes, vocab_size,
+    def __init__(self, sequence_length, num_classes, vocab_size,
             embedding_size, filter_sizes, num_filters, pretrained_path=False, l2_reg_lambda=0.0):
         # Placeholders for input, output and dropout
         self.input_x = tf.placeholder(tf.int32, [None, sequence_length], name="input_x")
