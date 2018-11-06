@@ -1,8 +1,6 @@
 # -*-coding:utf-8 -*-
-import tensorflow as tf
 import os
 import time
-
 import numpy as np
 from tqdm import tqdm
 from collections import namedtuple
@@ -14,12 +12,14 @@ from generator import Generator
 from discriminator import Discriminator
 from data_loader import Dataloader
 from rouge import Rouge
+import tensorflow as tf
 
-tf.logging.set_verbosity(tf.logging.INFO)
+
 # GPU config
 config = tf.ConfigProto(allow_soft_placement=True)
 config.gpu_options.allow_growth = True
 FLAGS = tf.app.flags.FLAGS
+tf.logging.set_verbosity(tf.logging.INFO)
 
 # Where to find data
 tf.app.flags.DEFINE_string('data_path', '', 'Path expression to tf.Example datafiles.\
@@ -92,14 +92,6 @@ tf.app.flags.DEFINE_boolean('restore_best_model', False,
                              used for further training. Useful for early stopping, or if your training checkpoint \
                               has become corrupted with e.g. NaN values.')
 tf.app.flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
-
-
-
-#########################################################################################
-#  Basic Training Parameters
-#########################################################################################
-TOTAL_BATCH = 200
-PRE_EPOCH_NUM = 2  # pretrain G
 
 
 def restore_best_model():
