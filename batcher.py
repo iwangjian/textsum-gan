@@ -231,9 +231,7 @@ class Batch(object):
 class Batcher(object):
     """A class to generate minibatches of data. Buckets examples together based on length of the encoder sequence."""
 
-    BATCH_QUEUE_MAX = 100  # max number of batches the batch_queue can hold
-
-    def __init__(self, data_path, vocab, hps, single_pass):
+    def __init__(self, data_path, vocab, hps, single_pass, BATCH_QUEUE_MAX=100):
         """Initialize the batcher. Start threads that process the data into batches.
 
         Args:
@@ -248,8 +246,8 @@ class Batcher(object):
         self._single_pass = single_pass
 
         # Initialize a queue of Batches waiting to be used, and a queue of Examples waiting to be batched
-        self._batch_queue = queue.Queue(self.BATCH_QUEUE_MAX)
-        self._example_queue = queue.Queue(self.BATCH_QUEUE_MAX * self._hps.batch_size)
+        self._batch_queue = queue.Queue(BATCH_QUEUE_MAX)
+        self._example_queue = queue.Queue(BATCH_QUEUE_MAX * self._hps.batch_size)
 
         # Different settings depending on whether we're in single_pass mode or not
         if single_pass:

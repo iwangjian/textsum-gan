@@ -380,18 +380,14 @@ class Generator(object):
         loss_to_minimize = self._total_loss
         tvars = tf.trainable_variables()
         gradients = tf.gradients(loss_to_minimize, tvars, aggregation_method=tf.AggregationMethod.EXPERIMENTAL_TREE)
-
-        # Clip the gradients
-        with tf.device("/gpu:0"):
-            grads, global_norm = tf.clip_by_global_norm(gradients, self._hps.max_grad_norm)
+        grads, global_norm = tf.clip_by_global_norm(gradients, self._hps.max_grad_norm)
 
         # Add a summary
         tf.summary.scalar('global_norm', global_norm)
 
         # Apply adagrad optimizer
         optimizer = tf.train.AdagradOptimizer(self._hps.lr, initial_accumulator_value=self._hps.adagrad_init_acc)
-        with tf.device("/gpu:0"):
-            self._train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=self.global_step,
+        self._train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=self.global_step,
                                                        name='train_step')
 
     def _rollout(self):
@@ -440,7 +436,7 @@ class Generator(object):
                                                                 dynamic_size=False, infer_shape=True,
                                                                 clear_after_read=False)
                     for i in range(given_number):
-                        output_token = output_token.write(i, [self.output_token[i]]*(self._hps.rollout/2))
+                        output_token = output_token.write(i, [self.output_token[i]]*(int(self._hps.rollout/2)))
 
                     time_step, output_token, given_number, out_state = control_flow_ops.while_loop(
                             cond=lambda time_step, _1, _2, _3: time_step < hps.max_dec_steps - given_number,

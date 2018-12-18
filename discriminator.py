@@ -21,7 +21,7 @@ class Discriminator(object):
 
         with tf.variable_scope('discriminator'):
             # Embedding layer
-            with tf.device('/cpu:0'), tf.name_scope("embedding"):
+            with tf.name_scope("embedding"):
                 self.embedding_matrix = tf.Variable(tf.random_normal([vocab_size, embedding_size]), name="embedding_matrix")
                 #self.W = tf.constant(self.init_matrix(vocab_size, embedding_size))
                 self.embedded_chars = tf.nn.embedding_lookup(self.embedding_matrix, self.input_x)

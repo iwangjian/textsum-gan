@@ -1,33 +1,30 @@
 # -*-coding:utf-8 -*-
 import os
-import time
-import numpy as np
-from tqdm import tqdm
 from collections import namedtuple
-from sklearn.metrics import accuracy_score
-import util
 from batcher import Batcher
 from data import Vocab
 from generator import Generator
 from discriminator import Discriminator
-from data_loader import Dataloader
-from rouge import Rouge
+import trainer as trainer
+import util
 import tensorflow as tf
 
 
 # GPU config
 config = tf.ConfigProto(allow_soft_placement=True)
 config.gpu_options.allow_growth = True
-FLAGS = tf.app.flags.FLAGS
+
 tf.logging.set_verbosity(tf.logging.INFO)
 
-# Where to find data
+# Data dirs
 tf.app.flags.DEFINE_string('data_path', '', 'Path expression to tf.Example datafiles.\
                            Can include wildcards to access multiple datafiles.')
 tf.app.flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
+tf.app.flags.DEFINE_string('log_root', 'log', 'Root directory for all logging.')
+tf.app.flags.DEFINE_string('pretrain_dis_data_path', 'Dis_train_data.npz','path for the pretrain dis')
 
 # Important settings
-tf.app.flags.DEFINE_string('mode', 'pretrain', 'must be one of pretrain/train/decode')
+tf.app.flags.DEFINE_string('mode', 'train', 'must be one of pretrain/train/decode')
 tf.app.flags.DEFINE_boolean('single_pass', False,
                             'For decode mode only. If True, run eval on the full dataset using a fixed checkpoint, \
                             i.e. take the current checkpoint, and use it to produce one summary for each example in \
@@ -36,21 +33,13 @@ tf.app.flags.DEFINE_boolean('single_pass', False,
                              use it to produce summaries for randomly-chosen examples and log the results to screen, \
                              indefinitely.')
 
-# Where to save output
-tf.app.flags.DEFINE_string('log_root', 'log', 'Root directory for all logging.')
-tf.app.flags.DEFINE_string('exp_name', 'textsum-gan', 'Name for experiment. \
-                             Logs will be saved in a directory with this name, under log_root.')
-
-tf.app.flags.DEFINE_string('pretrain_dis_data_path', 'Dis_train_data.npz','path for the pretrain dis')
-
 # Hyperparameters
 tf.app.flags.DEFINE_integer('hidden_dim', 256, 'dimension of RNN hidden states')
 tf.app.flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
 tf.app.flags.DEFINE_integer('batch_size', 16, 'minibatch size')
 tf.app.flags.DEFINE_integer('dis_batch_size', 256, 'batch size for pretrain discriminator')
-
 tf.app.flags.DEFINE_integer('max_enc_steps', 400, 'max timesteps of encoder (max source text tokens)')
-tf.app.flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
+tf.app.flags.DEFINE_integer('max_dec_steps', 30, 'max timesteps of decoder (max summary tokens)')
 tf.app.flags.DEFINE_integer('beam_size', 4, 'beam size for beam search decoding.')
 tf.app.flags.DEFINE_integer('min_dec_steps', 3,
                             'Minimum sequence length of generated summary. Applies only for beam search decoding mode')
@@ -63,14 +52,12 @@ tf.app.flags.DEFINE_float('adagrad_init_acc', 0.1, 'initial accumulator value fo
 tf.app.flags.DEFINE_float('rand_unif_init_mag', 0.02, 'magnitude for lstm cells random uniform inititalization')
 tf.app.flags.DEFINE_float('trunc_norm_init_std', 1e-4, 'std of trunc norm init, used for initializing everything else')
 tf.app.flags.DEFINE_float('max_grad_norm', 2.0, 'for gradient clipping')
+tf.app.flags.DEFINE_integer('rollout', 24, 'Size of rollout number')
 
 # Pointer-generator or baseline model
 tf.app.flags.DEFINE_boolean('pointer_gen', True, 'If True, use pointer-generator model. If False, use baseline model.')
 tf.app.flags.DEFINE_boolean('seqgan', True, 'If False disable seqgan')
 tf.app.flags.DEFINE_boolean('pretrain_discriminator', True, 'If False disable seqgan')
-
-tf.app.flags.DEFINE_integer('rollout', 24, 'Size of rollout number')
-tf.app.flags.DEFINE_integer('basegpu', 0, 'base gpu index')
 
 # Coverage hyperparameters
 tf.app.flags.DEFINE_boolean('coverage', False,
@@ -92,11 +79,24 @@ tf.app.flags.DEFINE_boolean('restore_best_model', False,
                              used for further training. Useful for early stopping, or if your training checkpoint \
                               has become corrupted with e.g. NaN values.')
 tf.app.flags.DEFINE_boolean('debug', False, "Run in tensorflow's debug mode (watches for NaN/inf values)")
+FLAGS = tf.app.flags.FLAGS
+
+
+def prepare_hps():
+    hparam_list = ['mode', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps',
+                   'coverage', 'cov_loss_wt', 'pointer_gen', 'seqgan', 'rollout','lr',
+                   'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm',]
+    hps_dict = {}
+    for key, val in FLAGS.__flags.items():
+        if key in hparam_list:
+            hps_dict[key] = val
+    hps = namedtuple("HParams", hps_dict.keys())(**hps_dict)
+    return hps
 
 
 def restore_best_model():
-    """Load bestmodel file from eval directory, add variables for adagrad, and save to train directory"""
-    tf.logging.info("Restoring bestmodel for training...")
+    """Load best-model file from eval directory, add variables for adagrad, and save to train directory"""
+    tf.logging.info("Restoring best-model for training...")
 
     # Initialize all vars in the model
     sess = tf.Session(config=util.get_config())
@@ -117,16 +117,16 @@ def restore_best_model():
     new_saver = tf.train.Saver()  # this saver saves all variables that now exist, including Adagrad variables
     new_saver.save(sess, new_fname)
     print("Saved.")
-    exit()
 
 
 def build_seqgan_graph(hps, vocab):
-    print('Build Generator Graph...')
+    print('Build generator graph...')
     with tf.device('/gpu:0'):
         generator = Generator(hps, vocab)
 
-    print('Build Discriminator Graph...')
+    print('Build discriminator graph...')
     with tf.device('/gpu:0'):
+        # TODO: Settings in args
         dis_filter_sizes = [2, 3, 4, 5]
         dis_num_filters = [100, 100, 100, 100]
         dis_l2_reg_lambda = 0.2
@@ -141,8 +141,7 @@ def build_seqgan_graph(hps, vocab):
     return generator, discriminator
 
 
-def pretrain_generator(generator, generator_batcher, summary_writer, sess_context_manager):
-    """Does setup before starting training (run_training)"""
+def setup_training(mode, generator, discriminator, generator_batcher, discriminator_batcher):
     train_dir = os.path.join(FLAGS.log_root, "train")
     if not os.path.exists(train_dir):
         os.makedirs(train_dir)
@@ -150,344 +149,47 @@ def pretrain_generator(generator, generator_batcher, summary_writer, sess_contex
     if FLAGS.restore_best_model:
         restore_best_model()
 
-    with sess_context_manager as sess:
-        D_rewards = np.zeros((FLAGS.batch_size, FLAGS.max_dec_steps))
-        rouge_rewards = np.zeros((FLAGS.batch_size, 1))
-        batch = generator_batcher.next_batch()
-        batch.batch_reward = D_rewards
-        batch.batch_rouge_reward = rouge_rewards
-        tf.logging.info('running pre-training step...')
-        t0 = time.time()
-        result_train = generator.run_train_step(sess, batch)
+    saver = tf.train.Saver(max_to_keep=3)  # keep 3 checkpoints at a time
+    supervisor = tf.train.Supervisor(logdir=train_dir,
+                                     is_chief=True,
+                                     saver=saver,
+                                     summary_op=None,
+                                     save_summaries_secs=60,  # save summaries for tensorboard every 60 secs
+                                     save_model_secs=60,  # checkpoint every 60 secs
+                                     global_step=generator.global_step)
+    summary_writer = supervisor.summary_writer
+    sess_context_manager = supervisor.prepare_or_wait_for_session(config=util.get_config())
 
-        t1 = time.time()
-        tf.logging.info('seconds for training step: %.3f', t1 - t0)
-        loss = result_train['loss']
-        tf.logging.info('Generator train loss: %f', loss)  # print the loss to screen
-
-        summaries = result_train['summaries']
-        train_step = result_train['global_step']
-        summary_writer.add_summary(summaries, train_step)  # write the summaries
-
-
-def pretrain_discriminator(discriminator, sess_context_manager):
-    dis_train_data_loader = Dataloader(FLAGS.dis_batch_size, FLAGS.vocab_size)
-    dis_test_data_loader = Dataloader(FLAGS.dis_batch_size, FLAGS.vocab_size)
-
-    print("Pre-train Discriminator")
-
-    pretrain_dis_data = np.load(FLAGS.pretrain_dis_data_path)
-    pos_summary, neg_summary = pretrain_dis_data['pos_summary_idx'], pretrain_dis_data['neg_summary_idx']
-    positive_train_summary = []
-    negative_train_summary = []
-    positive_eval_summary = []
-    negative_eval_summary = []
-
-    ##############################################################################
-    #############      Prepare Train and Eval data  ##############################
-
-    for i in range(len(pos_summary)):
-        if i < 143800:
-            positive_train_summary.append(pos_summary[i][:FLAGS.max_dec_steps])
-            negative_train_summary.append(neg_summary[i][:FLAGS.max_dec_steps])
+    try:
+        if mode == "pretrain":
+            trainer.pretrain_generator(generator, generator_batcher, summary_writer, sess_context_manager)
+        elif mode == "train":
+            if FLAGS.pretrain_discriminator:
+                trainer.pretrain_discriminator(discriminator, sess_context_manager)
+            trainer.adversarial_train(generator, discriminator, generator_batcher, discriminator_batcher,
+                                      summary_writer, sess_context_manager)
         else:
-            positive_eval_summary.append(pos_summary[i][:FLAGS.max_dec_steps])
-            negative_eval_summary.append(neg_summary[i][:FLAGS.max_dec_steps])
-
-    ##############################################################################
-    #############      Training       ############################################
-    train_max_epoch = 15
-    sess = sess_context_manager
-    for epoch in tqdm(range(train_max_epoch)):
-        dis_train_data_loader.load_data(positive_train_summary, negative_train_summary)
-        dis_train_data_loader.reset_pointer()
-        for it in range(dis_train_data_loader.num_batch):
-            x_batch, y_batch = dis_train_data_loader.next_batch()
-            feed = {
-                discriminator.input_x: x_batch,
-                discriminator.input_y: y_batch,
-                discriminator.dropout_keep_prob: 0.5
-            }
-            sess.run(discriminator.train_op, feed)
-
-        dis_test_data_loader.load_data(positive_eval_summary, negative_eval_summary)
-        dis_test_data_loader.reset_pointer()
-        acc_list = []
-
-        for it in range(dis_test_data_loader.num_batch):
-            x_batch, y_batch = dis_test_data_loader.next_batch()
-            feed = {
-                discriminator.input_x: x_batch,
-                discriminator.input_y: y_batch,
-                discriminator.dropout_keep_prob: 1.0
-            }
-            pred = sess.run(discriminator.predictions, feed)
-            target = np.where(np.array(y_batch) == 1)[-1] #np.concatenate(y_batch)
-            acc_list.append(accuracy_score(y_pred=pred, y_true=target))
-        eval_acc = np.mean(acc_list)
-
-        print('Pretrain epoch:{}, Eval accuracy: {}'.format(epoch, eval_acc))
-        #if eval_acc >= 0.8:
-        #    break
-
-
-def run_training(generator, discriminator, generator_batcher, discriminator_batcher, summary_writer, sess_context_manager):
-    print('#########################################################################')
-    print('Start Adversarial Training...')
-
-    with sess_context_manager as sess:
-        D_rewards = np.zeros((FLAGS.batch_size, FLAGS.max_dec_steps))
-        rouge_rewards = np.zeros((FLAGS.batch_size, 1))
-
-        while True:
-            # Train the generator for one step
-            for it in range(1):
-                batch = generator_batcher.next_batch()
-                batch.batch_reward = D_rewards
-                batch.batch_rouge_reward = rouge_rewards
-
-                tf.logging.info('running training step...')
-                t0 = time.time()
-                result_train = generator.run_train_step(sess, batch)
-
-                t1 = time.time()
-                tf.logging.info('seconds for training step: %.3f', t1 - t0)
-                loss = result_train['loss']
-                tf.logging.info('Generator train loss: %f', loss)  # print the loss to screen
-
-                summaries = result_train['summaries']
-                train_step = result_train['global_step']
-                summary_writer.add_summary(summaries, train_step)  # write the summaries
-
-                rg = Rouge()
-
-                gtruth_token = batch.target_batch
-                output_sample_token = np.transpose(np.squeeze(result_train['output_sample_token']))
-                output_argmax_token = np.transpose(np.squeeze(result_train['output_summary_token']))
-
-                def remove_eos(input_text):
-
-                    _input_text_eos = np.where(input_text == 3)[0]
-                    if len(_input_text_eos) != 0:
-                        cliped_text = input_text[:_input_text_eos[0]]
-                    else:
-                        cliped_text = input_text
-                    return ' '.join(map(str, cliped_text))
-
-                rouge_rewards = []
-
-                for gt, sample, argmax in zip(gtruth_token, output_sample_token, output_argmax_token):
-                    _gt = remove_eos(gt)
-                    _sample = remove_eos(sample)
-                    _argmax = remove_eos(argmax)
-
-                    r_baseline = rg.get_scores(_gt, _argmax)[0]['rouge-l']['f']
-                    r_sample = rg.get_scores(_gt, _sample)[0]['rouge-l']['f']
-                    rouge_rewards.append(r_baseline - r_sample)
-
-                rouge_rewards = np.reshape(rouge_rewards, [FLAGS.batch_size, 1])
-                tf.logging.info('RL reward for rouge-L: %.3f', np.mean(rouge_rewards))
-
-                tf.logging.info('running rollout step...')
-                t0 = time.time()
-                result_rollout = generator.run_rollout_step(sess, batch)
-                t1 = time.time()
-                tf.logging.info('seconds for rollout step: %.3f', t1 - t0)
-
-                # shape [rollout_num, seqlen(this is number of roll), batch_size, seq_len]
-                rollout_output = result_rollout['rollout_token']
-                given_number_of_rollout = rollout_output.shape[1]
-
-                # calculate D_reward
-                print("start to calculate D_rewards")
-                _feed_output_token = np.reshape(rollout_output, [-1, FLAGS.max_dec_steps])
-
-                feed_output_token = []
-                for sent in _feed_output_token:
-                    index_list = np.where(sent == 3)[0]
-                    if len(index_list) != 0:
-                        ind = index_list[0]
-                        new_sent = np.concatenate([sent[:ind + 1], np.ones(100 - ind - 1)])
-                        feed_output_token.append(new_sent)
-                    else:
-                        new_sent = np.array(sent, dtype=np.int32)
-                        feed_output_token.append(new_sent)
-
-                feed_output_token = np.array(feed_output_token)
-                feed_output_token = feed_output_token.reshape((len(feed_output_token), -1))
-                print("feed_out_token.shape:", feed_output_token.shape)
-                '''
-                clip_index = np.where(feed_output_token > FLAGS.vocab_size-1)
-                index_x = clip_index[0]
-                index_y = clip_index[1]
-                for i in range(len(index_x)):
-                    feed_output_token[index_x[i]][index_y[i]] = 0
-                '''
-                if feed_output_token.shape[1] > 1:
-                    for i in range(len(feed_output_token)):
-                        clip_index = np.where(np.array(feed_output_token[i]) > FLAGS.vocab_size - 1)
-                        for idx in clip_index:
-                            feed_output_token[i][idx] = 0
-
-                    # update
-                    ypred_for_auc = []
-                    for feed_output_token_small in np.split(feed_output_token, FLAGS.rollout):
-                        feed = {discriminator.input_x: feed_output_token_small,
-                                discriminator.dropout_keep_prob: 1.0
-                                }
-                        # ypred_for_auc: [rollout_num * seqlen(this is number of roll) * batch_size, 2]
-                        ypred_for_auc.append(sess.run(discriminator.ypred_for_auc, feed))
-                    ypred_for_auc = np.concatenate(ypred_for_auc)
-                    ypred = np.array([item[1] for item in ypred_for_auc])
-                    framed_yred = np.reshape(ypred, [FLAGS.rollout, given_number_of_rollout, FLAGS.batch_size])
-                    rewards = np.transpose(np.sum(framed_yred, 0)) / (
-                                1.0 * FLAGS.rollout)  # [batch_size, output_max_len// 20]
-                    if np.std(rewards) != 0.:
-                        rewards = (rewards - np.mean(rewards)) / np.std(rewards)
-                    D_rewards = np.zeros((FLAGS.batch_size, FLAGS.max_dec_steps))
-                    print("rewards.shape:", rewards.shape)
-
-                    for count, i in enumerate(
-                            range(1, FLAGS.max_dec_steps, int(FLAGS.max_dec_steps / rewards.shape[1]))):
-                        D_rewards[:, i] = rewards[:, count]
-
-                else:
-                    tmp = []
-                    for i in range(len(feed_output_token)):
-                        tmp.append(feed_output_token[i][0])
-                    feed_output_token = np.array(tmp).copy()
-                    print("feed-new:", feed_output_token.shape)
-                    print("Filter out!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
-
-            # Train the discriminator
-            print("Start to train the Discriminator!")
-            for _ in tqdm(range(5)):
-                batch = discriminator_batcher.next_batch()
-                res = generator.run_summary_token_step(sess, batch)
-                _output_argmax_summary = res['output_summary_token']
-                _output_argmax_summary = np.transpose(np.squeeze(_output_argmax_summary))  # [batch_size, max_dec_steps]
-                gtruth_data = batch.target_batch  # [batch_size, max_dec_steps]; format: [[], [], ...]
-
-                output_argmax_summary = []
-                for sent in _output_argmax_summary:
-                    index_list = np.where(sent == 3)[0]
-                    if len(index_list) != 0:
-                        ind = index_list[0]
-                        new_sent = np.concatenate([sent[:ind + 1], np.ones(FLAGS.max_dec_steps - ind - 1)])
-                        output_argmax_summary.append(new_sent)
-                    else:
-                        output_argmax_summary.append(sent)
-                output_argmax_summary = np.array(output_argmax_summary)
-
-                positive_examples = []
-                negative_examples = []
-                for ele in gtruth_data:
-                    positive_examples.append(ele)
-                for ele in output_argmax_summary:
-                    negative_examples.append(ele)
-                dis_data_loader = Dataloader(FLAGS.batch_size, FLAGS.vocab_size)
-
-                max_epoch = 3
-
-                for epoch in range(max_epoch):
-                    dis_data_loader.load_data(positive_examples, negative_examples)
-                    dis_data_loader.reset_pointer()
-                    for it in range(dis_data_loader.num_batch):
-                        x_batch, y_batch = dis_data_loader.next_batch()
-                        feed = {
-                            discriminator.input_x: x_batch,
-                            discriminator.input_y: y_batch,
-                            discriminator.dropout_keep_prob: 0.5
-                        }
-                        _ = sess.run(discriminator.train_op, feed)
-
-
-def setup_pretrain(generator, discriminator, generator_batcher, discriminator_batcher):
-    """Does setup before starting training (run_training)"""
-    train_dir = os.path.join(FLAGS.log_root, "train")
-    if not os.path.exists(train_dir):
-        os.makedirs(train_dir)
-
-    if FLAGS.restore_best_model:
-        restore_best_model()
-    # keep 4 checkpoints at a time
-    saver = tf.train.Saver(max_to_keep=4)
-    sv = tf.train.Supervisor(logdir=train_dir,
-                             is_chief=True,
-                             saver=saver,
-                             summary_op=None,
-                             save_summaries_secs=60,  # save summaries for tensorboard every 60 secs
-                             save_model_secs=60,  # checkpoint every 60 secs
-                             global_step=generator.global_step)
-    summary_writer = sv.summary_writer
-    tf.logging.info("Preparing or waiting for session...")
-    sess_context_manager = sv.prepare_or_wait_for_session(config=util.get_config())
-    tf.logging.info("Created session.")
-    try:
-        pretrain_generator(generator, generator_batcher, summary_writer, sess_context_manager)
-
+            raise ValueError("Caught invalid value of mode!")
     except KeyboardInterrupt:
         tf.logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
-        sv.stop()
+        supervisor.stop()
 
 
-def setup_training(generator, discriminator, generator_batcher, discriminator_batcher):
-    """Does setup before starting training (run_training)"""
-    train_dir = os.path.join(FLAGS.log_root, "train")
-    if not os.path.exists(train_dir):
-        os.makedirs(train_dir)
-
-    if FLAGS.restore_best_model:
-        restore_best_model()
-    # keep 4 checkpoints at a time
-    saver = tf.train.Saver(max_to_keep=4)
-    sv = tf.train.Supervisor(logdir=train_dir,
-                             is_chief=True,
-                             saver=saver,
-                             summary_op=None,
-                             save_summaries_secs=60,  # save summaries for tensorboard every 60 secs
-                             save_model_secs=60,  # checkpoint every 60 secs
-                             global_step=generator.global_step)
-    summary_writer = sv.summary_writer
-    tf.logging.info("Preparing or waiting for session...")
-    sess_context_manager = sv.prepare_or_wait_for_session(config=util.get_config())
-    tf.logging.info("Created session.")
-    try:
-        run_training(generator, discriminator, generator_batcher, discriminator_batcher,
-                     summary_writer, sess_context_manager)
-
-    except KeyboardInterrupt:
-        tf.logging.info("Caught keyboard interrupt on worker. Stopping supervisor...")
-        sv.stop()
-
-
-def prepare_hps_vocab():
-    hparam_list = ['mode', 'lr', 'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm',
-                   'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps', 'coverage', 'cov_loss_wt',
-                   'pointer_gen', 'seqgan', 'rollout']
-    hps_dict = {}
-    for key, val in FLAGS.__flags.items():  # for each flag
-        if key in hparam_list:  # if it's in the list
-            hps_dict[key] = val  # add it to the dict
-    hps = namedtuple("HParams", hps_dict.keys())(**hps_dict)
-    vocab = Vocab(FLAGS.vocab_path, FLAGS.vocab_size)
-    return hps, vocab
-
-
-def main(unused_argv):
+def main(args):
     # prints a message if you've entered flags incorrectly
-    if len(unused_argv) != 1:
-        raise Exception("Problem with flags: %s" % unused_argv)
+    if len(args) != 1:
+        raise Exception("Problem with flags: %s" % args)
 
-    hps, vocab = prepare_hps_vocab()
+    hps = prepare_hps()
+    vocab = Vocab(FLAGS.vocab_path, FLAGS.vocab_size)
+
     generator_batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
     discriminator_batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
+
     generator, discriminator = build_seqgan_graph(hps, vocab)
 
-    if hps.mode == 'pretrain':
-        setup_pretrain(generator, discriminator, generator_batcher, discriminator_batcher)
-    if hps.mode == 'train':
-        setup_training(generator, discriminator, generator_batcher, discriminator_batcher)
+    if hps.mode == "pretrain" or hps.mode == "train":
+        setup_training(hps.mode, generator, discriminator, generator_batcher, discriminator_batcher)
     elif hps.mode == 'decode':
         # The model is configured with max_dec_steps=1 because we only ever run one step of
         # the decoder at a time (to do beam search).
@@ -501,9 +203,3 @@ def main(unused_argv):
 
 if __name__ == '__main__':
     tf.app.run()
-
-
-
-
-
-
