@@ -5,6 +5,7 @@ from batcher import Batcher
 from data import Vocab
 from generator import Generator
 from discriminator import Discriminator
+from decode import BeamSearchDecoder
 import trainer as trainer
 import util
 import tensorflow as tf
@@ -39,9 +40,9 @@ tf.app.flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
 tf.app.flags.DEFINE_integer('batch_size', 16, 'minibatch size')
 tf.app.flags.DEFINE_integer('dis_batch_size', 256, 'batch size for pretrain discriminator')
 tf.app.flags.DEFINE_integer('max_enc_steps', 400, 'max timesteps of encoder (max source text tokens)')
-tf.app.flags.DEFINE_integer('max_dec_steps', 30, 'max timesteps of decoder (max summary tokens)')
+tf.app.flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
 tf.app.flags.DEFINE_integer('beam_size', 4, 'beam size for beam search decoding.')
-tf.app.flags.DEFINE_integer('min_dec_steps', 3,
+tf.app.flags.DEFINE_integer('min_dec_steps', 30,
                             'Minimum sequence length of generated summary. Applies only for beam search decoding mode')
 tf.app.flags.DEFINE_integer('vocab_size', 50000,
                             'Size of vocabulary. These will be read from the vocabulary file in order. \
@@ -123,6 +124,7 @@ def build_seqgan_graph(hps, vocab):
     print('Build generator graph...')
     with tf.device('/gpu:0'):
         generator = Generator(hps, vocab)
+        generator.build_graph()
 
     print('Build discriminator graph...')
     with tf.device('/gpu:0'):
@@ -180,25 +182,33 @@ def main(args):
     if len(args) != 1:
         raise Exception("Problem with flags: %s" % args)
 
+    # If in decode mode, set batch_size = beam_size
+    # Reason: in decode mode, we decode one example at a time.
+    # On each step, we have beam_size-many hypotheses in the beam, so we need to make a batch of these hypotheses.
+    if FLAGS.mode == 'decode':
+        FLAGS.batch_size = FLAGS.beam_size
+
+    # If single_pass=True, check we're in decode mode
+    if FLAGS.single_pass and FLAGS.mode != 'decode':
+        raise Exception("The single_pass flag should only be True in decode mode")
     hps = prepare_hps()
     vocab = Vocab(FLAGS.vocab_path, FLAGS.vocab_size)
-
     generator_batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
     discriminator_batcher = Batcher(FLAGS.data_path, vocab, hps, single_pass=FLAGS.single_pass)
 
-    generator, discriminator = build_seqgan_graph(hps, vocab)
-
     if hps.mode == "pretrain" or hps.mode == "train":
+        generator, discriminator = build_seqgan_graph(hps, vocab)
         setup_training(hps.mode, generator, discriminator, generator_batcher, discriminator_batcher)
     elif hps.mode == 'decode':
         # The model is configured with max_dec_steps=1 because we only ever run one step of
         # the decoder at a time (to do beam search).
-        decode_model_hps = hps._replace(max_dec_steps=1)
+        decode_model_hps = hps
+        decode_model_hps.max_dec_steps = 1
         generator = Generator(decode_model_hps, vocab)
-        #decoder = BeamSearchDecoder(generator, generator_batcher, vocab)
-        #decoder.decode()
+        decoder = BeamSearchDecoder(generator, generator_batcher, vocab)
+        decoder.decode()
     else:
-        raise ValueError("The 'mode' flag must be one of train/decode")
+        raise ValueError("The 'mode' flag must be one of pretrain/train/decode")
 
 
 if __name__ == '__main__':

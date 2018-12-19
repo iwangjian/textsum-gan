@@ -69,9 +69,7 @@ def pretrain_discriminator(discriminator, sess):
                 discriminator.input_y: y_batch,
                 discriminator.dropout_keep_prob: 0.5
             }
-            print("before run discriminator")
             sess.run(discriminator.train_op, feed)
-            print("after runned")
 
         # validation process
         dis_val_loader.load_data(pos_val, neg_val)
@@ -116,21 +114,24 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
             target_token = batch.target_batch
             output_sample_token = np.transpose(np.squeeze(result_train['output_sample_token']))
             output_argmax_token = np.transpose(np.squeeze(result_train['output_summary_token']))
+            rouge = Rouge()
             for target, sample, argmax in zip(target_token, output_sample_token, output_argmax_token):
-                _target = remove_eos(target)
-                _sample = remove_eos(sample)
-                _argmax = remove_eos(argmax)
-                r_baseline = Rouge.get_scores(_target, _argmax)[0]['rouge-l']['f']
-                r_sample = Rouge.get_scores(_target, _sample)[0]['rouge-l']['f']
+                target = remove_eos(target)
+                sample = remove_eos(sample)
+                argmax = remove_eos(argmax)
+                r_baseline = rouge.get_scores(argmax, target)[0]["rouge-l"]["f"]
+                r_sample = rouge.get_scores(sample, target)[0]["rouge-l"]["f"]
+                #print("target:", target)
+                #print("sample:", sample)
+                #print("argmax:", argmax)
+                #print("r_baseline:", r_baseline)
+                #print("r_sample:", r_sample)
                 rouge_rewards.append(r_baseline - r_sample)
             rouge_rewards = np.reshape(rouge_rewards, [FLAGS.batch_size, 1])
-            print('RL reward for rouge-L: %.3f', np.mean(rouge_rewards))
+            print("RL reward for rouge-L: %.3f" % np.mean(rouge_rewards))
 
-            print('running rollout step...')
-            t0 = time.time()
+            print("running rollout step...")
             result_rollout = generator.run_rollout_step(sess, batch)
-            print('seconds for rollout step: %.3f', time.time() - t0)
-
             # shape [rollout_num, seqlen(this is number of roll), batch_size, seq_len]
             rollout_output = result_rollout['rollout_token']
             num_rollout = rollout_output.shape[1]
@@ -143,33 +144,31 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
                 index_list = np.where(sent == 3)[0]
                 if len(index_list) != 0:
                     ind = index_list[0]
-                    new_sent = np.concatenate([sent[:ind + 1], np.ones(100 - ind - 1)])
+                    new_sent = np.concatenate([sent[:ind + 1], np.ones(FLAGS.max_dec_steps - ind - 1)])
                     feed_output_token.append(new_sent)
                 else:
                     new_sent = np.array(sent, dtype=np.int32)
                     feed_output_token.append(new_sent)
             feed_output_token = np.array(feed_output_token)
-            feed_output_token = feed_output_token.reshape((len(feed_output_token), -1))
-            for i in range(len(feed_output_token)):
-                clip_index = np.where(np.array(feed_output_token[i]) > FLAGS.vocab_size - 1)
-                for idx in clip_index:
-                    feed_output_token[i][idx] = 0
+
+            feed_output_token[feed_output_token > FLAGS.vocab_size-1] = 0
 
             # update
             ypred_for_auc = []
             for token in np.split(feed_output_token, FLAGS.rollout):
                 feed = {discriminator.input_x: token,
                         discriminator.dropout_keep_prob: 1.0}
-                # ypred_for_auc: [rollout_num * seqlen(this is number of roll) * batch_size, 2]
-                ypred_for_auc.append(sess.run(discriminator.ypred_for_auc, feed))
-
-            ypred = np.array([item[1] for item in ypred_for_auc])
-            ypred = np.reshape(ypred, [FLAGS.rollout, num_rollout, FLAGS.batch_size])
+                # ypred_auc: [rollout_num * seqlen(this is number of roll) * batch_size, 2]
+                ypred_auc = sess.run(discriminator.ypred_for_auc, feed)
+                ypred_for_auc.append(np.array(ypred_auc))
+            ypred = np.array(ypred_for_auc)
+            ypred = np.reshape(ypred, [FLAGS.rollout, -1, FLAGS.batch_size])
             rewards = np.transpose(np.sum(ypred, 0)) / (1.0 * FLAGS.rollout)  # [batch_size, output_max_len// 20]
             if np.std(rewards) != 0.:
                 rewards = (rewards - np.mean(rewards)) / np.std(rewards)
+            print("rewards:", rewards.shape)
 
-            for count, i in enumerate(range(1, FLAGS.max_dec_steps, int(FLAGS.max_dec_steps / rewards.shape[1]))):
+            for count, i in enumerate(range(1, FLAGS.max_dec_steps, 4)):
                 D_rewards[:, i] = rewards[:, count]
 
             # Train discriminator
@@ -191,13 +190,14 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
                         output_summary.append(sent)
                 output_summary = np.array(output_summary)
 
-                max_epoch = 3  # why ????
+                max_epoch = 3
                 dis_loader = Dataloader(FLAGS.batch_size, FLAGS.vocab_size)
                 pos_train = [ground_truth[i] for i in range(len(ground_truth))]
                 neg_train = [output_summary[i] for i in range(len(output_summary))]
                 for epoch in range(max_epoch):
                     dis_loader.load_data(pos_train, neg_train)
                     dis_loader.reset_pointer()
+                    # train for 1 epoch
                     for it in range(dis_loader.num_batch):
                         x_batch, y_batch = dis_loader.next_batch()
                         feed = {
@@ -214,4 +214,4 @@ def remove_eos(input_text):
         cliped_text = input_text[:_input_text_eos[0]]
     else:
         cliped_text = input_text
-    return ' '.join(list(map(str, cliped_text)))
+    return " ".join(list(map(str, cliped_text)))
