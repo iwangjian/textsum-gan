@@ -12,8 +12,8 @@ import tensorflow as tf
 
 
 # GPU config
-config = tf.ConfigProto(allow_soft_placement=True)
-config.gpu_options.allow_growth = True
+#config = tf.ConfigProto(allow_soft_placement=True)
+#config.gpu_options.allow_growth = True
 
 tf.logging.set_verbosity(tf.logging.INFO)
 
@@ -150,6 +150,7 @@ def setup_training(mode, generator, discriminator, generator_batcher, discrimina
 
     if FLAGS.restore_best_model:
         restore_best_model()
+        return
 
     saver = tf.train.Saver(max_to_keep=3)  # keep 3 checkpoints at a time
     supervisor = tf.train.Supervisor(logdir=train_dir,
@@ -203,7 +204,6 @@ def main(args):
         # The model is configured with max_dec_steps=1 because we only ever run one step of
         # the decoder at a time (to do beam search).
         decode_model_hps = hps
-        decode_model_hps.max_dec_steps = 1
         generator = Generator(decode_model_hps, vocab)
         decoder = BeamSearchDecoder(generator, generator_batcher, vocab)
         decoder.decode()

@@ -159,18 +159,17 @@ class Generator(object):
             prev_coverage = self.prev_coverage
         else:
             prev_coverage = None
-        outputs, out_state, attn_dists,\
-        p_gens, coverage = attention_decoder(inputs,
-                                               self._dec_in_state,
-                                               self._enc_states,
-                                               self._enc_padding_mask,
-                                               self.dec_cell,
-                                               initial_state_attention=(hps.mode == "decode"),
-                                               pointer_gen=hps.pointer_gen,
-                                               use_coverage=hps.coverage,
-                                               prev_coverage=prev_coverage)
-
-        return outputs, out_state, attn_dists, p_gens, coverage
+        outputs, out_state, attn_dists, \
+        p_gens, state_list, coverage = attention_decoder(inputs,
+                                                         self._dec_in_state,
+                                                         self._enc_states,
+                                                         self._enc_padding_mask,
+                                                         self.dec_cell,
+                                                         initial_state_attention=(hps.mode == "decode"),
+                                                         pointer_gen=hps.pointer_gen,
+                                                         use_coverage=hps.coverage,
+                                                         prev_coverage=prev_coverage)
+        return outputs, out_state, attn_dists, p_gens, state_list, coverage
 
     def _calc_final_dist(self, vocab_dists, attn_dists, p_gens, multi_batch_num=1):
         """Calculate the final distribution, for the pointer-generator model
@@ -248,7 +247,7 @@ class Generator(object):
             with tf.variable_scope('embedding'):
                 self.embedding = tf.get_variable('embedding', [vsize, hps.emb_dim], dtype=tf.float32,
                                             initializer=self.trunc_norm_init)
-                if hps.mode == "train" or hps.mode == 'pretrain':
+                if hps.mode == "train" or hps.mode == "pretrain":
                     self._add_emb_vis(self.embedding)  # add to tensorboard
                 emb_enc_inputs = tf.nn.embedding_lookup(self.embedding,
                                                         self._enc_batch)  # tensor with shape (batch_size, max_enc_steps, emb_size)
@@ -265,7 +264,7 @@ class Generator(object):
             # Add the decoder.
             with tf.variable_scope('decoder'):
                 self.decoder_outputs, self._dec_out_state, \
-                self.attn_dists, self.p_gens, self.coverage = self._add_decoder(emb_dec_inputs)
+                self.attn_dists, self.p_gens, self.state_list, self.coverage = self._add_decoder(emb_dec_inputs)
 
             # Add the output projection to obtain the vocabulary distribution
             with tf.variable_scope('output_projection'):
@@ -397,13 +396,13 @@ class Generator(object):
 
             def reward_recurrence(time_step, output_token, given_number, out_state):
                 input_token = tf.unstack(tf.squeeze(output_token.read(time_step+given_number-1)), axis=0)
-
+                dec_inut = [tf.nn.embedding_lookup(embedding_extend, ids=input_single_token)
+                                              for input_single_token in input_token]
                 enc_state = self._enc_states
                 enc_pad = self._enc_padding_mask
 
                 outputs, out_state, attn_dists, p_gens \
-                    = roll_attention_decoder([tf.nn.embedding_lookup(embedding_extend, ids=input_single_token)
-                                              for input_single_token in input_token],
+                    = roll_attention_decoder(decoder_inputs=dec_inut,
                                              initial_state=out_state,
                                              encoder_states=enc_state,
                                              enc_padding_mask=enc_pad,
@@ -428,8 +427,8 @@ class Generator(object):
             def run_once():
                 rollout_token = []
                 # modifying
-                for given_number in tqdm(range(1, hps.max_dec_steps)):
-                    out_state = [self.coverage[given_number]]*(int(self._hps.rollout/2))
+                for given_number in tqdm(range(1, hps.max_dec_steps, 4)):
+                    out_state = [self.state_list[given_number]]*(int(self._hps.rollout/2))
 
                     output_token = tensor_array_ops.TensorArray(dtype=tf.int32, size=FLAGS.max_dec_steps,
                                                                 dynamic_size=False, infer_shape=True,
@@ -449,20 +448,12 @@ class Generator(object):
                     for n in range(FLAGS.max_dec_steps):
                         output_token_array.append(output_token.read(n))
                     rollout_token.append(tf.concat(output_token_array, axis=-1))
-                # output_token_multiply_rollout = tf.stack([tf.concat(self.output_token, axis=-1)] * self._hps.rollout)
-                # rollout_token.append(output_token_multiply_rollout)
                 return tf.stack(rollout_token)
 
-            # rollout_output_token_all: shape [rollout_num, seqlen(this is number of roll), batch_size, seq_len]
-            # self.rollout_output_token_all = tf.map_fn(fn=run_once,
-            #                                           elems=tf.range(self._hps.rollout),
-            #                                           swap_memory=True,
-            #                                           parallel_iterations=self._hps.rollout)
             rollout_output_token_all = []
-            for d in ['/gpu:0', '/gpu:1']:
-                with tf.device(d):
-                    rollout_output_token_all.append(run_once())
-
+            rollout_nums = 2
+            for _ in range(rollout_nums):
+                rollout_output_token_all.append(run_once())
             self.rollout_output_token_all = tf.transpose(tf.concat(rollout_output_token_all, axis=1),
                                                             perm=[1, 0, 2, 3])
 
@@ -540,6 +531,7 @@ class Generator(object):
            Returns a dictionary containing train op, summaries, loss, global_step and (optionally) coverage loss.
         """
         feed_dict = self._make_feed_dict(batch)
+        print(self.rollout_output_token_all)
         to_return = {
             'rollout_token': self.rollout_output_token_all
         }

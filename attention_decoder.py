@@ -74,10 +74,10 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
 
         # Get the weight vectors v and w_c (w_c is for coverage)
         v = variable_scope.get_variable("v", [attention_vec_size])
+
         if use_coverage:
             with variable_scope.variable_scope("coverage"):
                 w_c = variable_scope.get_variable("w_c", [1, 1, 1, attention_vec_size])
-
         if prev_coverage is not None:  # for beam search mode with coverage
             # reshape from (batch_size, attn_length) to (batch_size, attn_len, 1, 1)
             prev_coverage = tf.expand_dims(tf.expand_dims(prev_coverage, 2), 3)
@@ -111,24 +111,19 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
                     # Multiply coverage vector by w_c to get coverage_features.
                     coverage_features = nn_ops.conv2d(coverage, w_c, [1, 1, 1, 1],
                                                       "SAME")  # c has shape (batch_size, attn_length, 1, attention_vec_size)
-
                     # Calculate v^T tanh(W_h h_i + W_s s_t + w_c c_i^t + b_attn)
                     e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features + coverage_features),
                                             [2, 3])  # shape (batch_size,attn_length)
-
                     # Calculate attention distribution
                     attn_dist = masked_attention(e)
-
                     # Update coverage vector
                     coverage += array_ops.reshape(attn_dist, [batch_size, -1, 1, 1])
                 else:
                     # Calculate v^T tanh(W_h h_i + W_s s_t + b_attn)
                     e = math_ops.reduce_sum(v * math_ops.tanh(encoder_features + decoder_features),
                                             [2, 3])  # calculate e
-
                     # Calculate attention distribution
                     attn_dist = masked_attention(e)
-
                     if use_coverage:  # first step of training
                         coverage = tf.expand_dims(tf.expand_dims(attn_dist, 2), 2)  # initialize coverage
 
@@ -144,13 +139,14 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
         attn_dists = []
         p_gens = []
         state = initial_state
+        state_list = [initial_state]
         coverage = prev_coverage  # initialize coverage to None or whatever was passed in
         context_vector = array_ops.zeros([batch_size, attn_size])
         context_vector.set_shape([None, attn_size])  # Ensure the second shape of attention vectors is set.
         if initial_state_attention:  # true in decode mode
             # Re-calculate the context vector from the previous step so that we can pass it through a linear layer with this step's input to get a modified version of the input
-            context_vector, _, coverage = attention(initial_state,
-                                                    coverage)  # in decode mode, this is what updates the coverage vector
+            context_vector, _, coverage = attention(initial_state, coverage)  # in decode mode, this is what updates the coverage vector
+
         for i, inp in enumerate(decoder_inputs):
             tf.logging.info("Adding attention_decoder timestep %i of %i", i, len(decoder_inputs))
             if i > 0:
@@ -164,6 +160,7 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
 
             # Run the decoder RNN cell. cell_output = decoder state
             cell_output, state = cell(x, state)
+            state_list.append(state)  # append state
 
             # Run the attention mechanism.
             if i == 0 and initial_state_attention:  # always true in decode mode
@@ -191,7 +188,7 @@ def attention_decoder(decoder_inputs, initial_state, encoder_states, enc_padding
         if coverage is not None:
             coverage = array_ops.reshape(coverage, [batch_size, -1])
 
-        return outputs, state, attn_dists, p_gens, coverage
+        return outputs, state, attn_dists, p_gens, state_list, coverage
 
 
 def linear(args, output_size, bias, bias_start=0.0, scope=None):

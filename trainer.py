@@ -116,14 +116,11 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
             output_argmax_token = np.transpose(np.squeeze(result_train['output_summary_token']))
             rouge = Rouge()
             for target, sample, argmax in zip(target_token, output_sample_token, output_argmax_token):
-                target = remove_eos(target)
-                sample = remove_eos(sample)
-                argmax = remove_eos(argmax)
-                r_baseline = rouge.get_scores(argmax, target)[0]["rouge-l"]["f"]
-                r_sample = rouge.get_scores(sample, target)[0]["rouge-l"]["f"]
-                #print("target:", target)
-                #print("sample:", sample)
-                #print("argmax:", argmax)
+                target_ = remove_eos(target)
+                sample_ = remove_eos(sample)
+                argmax_ = remove_eos(argmax)
+                r_baseline = rouge.get_scores(argmax_, target_)[0]["rouge-l"]["f"]
+                r_sample = rouge.get_scores(sample_, target_)[0]["rouge-l"]["f"]
                 #print("r_baseline:", r_baseline)
                 #print("r_sample:", r_sample)
                 rouge_rewards.append(r_baseline - r_sample)
@@ -132,9 +129,8 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
 
             print("running rollout step...")
             result_rollout = generator.run_rollout_step(sess, batch)
-            # shape [rollout_num, seqlen(this is number of roll), batch_size, seq_len]
-            rollout_output = result_rollout['rollout_token']
-            num_rollout = rollout_output.shape[1]
+            rollout_output = result_rollout['rollout_token']  # shape [rollout_num, seqlen(this is number of roll), batch_size, seq_len]
+            print("rollout_output:", rollout_output.shape)
 
             # calculate D_reward
             print("start to calculate D_rewards")
@@ -147,10 +143,8 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
                     new_sent = np.concatenate([sent[:ind + 1], np.ones(FLAGS.max_dec_steps - ind - 1)])
                     feed_output_token.append(new_sent)
                 else:
-                    new_sent = np.array(sent, dtype=np.int32)
-                    feed_output_token.append(new_sent)
+                    feed_output_token.append(sent)
             feed_output_token = np.array(feed_output_token)
-
             feed_output_token[feed_output_token > FLAGS.vocab_size-1] = 0
 
             # update
@@ -158,18 +152,20 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
             for token in np.split(feed_output_token, FLAGS.rollout):
                 feed = {discriminator.input_x: token,
                         discriminator.dropout_keep_prob: 1.0}
-                # ypred_auc: [rollout_num * seqlen(this is number of roll) * batch_size, 2]
-                ypred_auc = sess.run(discriminator.ypred_for_auc, feed)
-                ypred_for_auc.append(np.array(ypred_auc))
-            ypred = np.array(ypred_for_auc)
+                ypred_auc = sess.run(discriminator.ypred_for_auc, feed)  # shape: [rollout_num * seqlen(this is number of roll) * batch_size, 2]
+                ypred_for_auc.append(ypred_auc)
+            ypred_for_auc = np.concatenate(ypred_for_auc)
+            ypred = np.array([item[1] for item in ypred_for_auc])
             ypred = np.reshape(ypred, [FLAGS.rollout, -1, FLAGS.batch_size])
             rewards = np.transpose(np.sum(ypred, 0)) / (1.0 * FLAGS.rollout)  # [batch_size, output_max_len// 20]
-            if np.std(rewards) != 0.:
-                rewards = (rewards - np.mean(rewards)) / np.std(rewards)
             print("rewards:", rewards.shape)
 
+            if np.std(rewards) != 0.:
+                rewards = (rewards - np.mean(rewards)) / np.std(rewards)
+            D_rewards = np.zeros([FLAGS.batch_size, FLAGS.max_dec_steps])
             for count, i in enumerate(range(1, FLAGS.max_dec_steps, 4)):
                 D_rewards[:, i] = rewards[:, count]
+            print("D_rewards:", D_rewards.shape)
 
             # Train discriminator
             print("Start to train discriminator...")
@@ -194,7 +190,7 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
                 dis_loader = Dataloader(FLAGS.batch_size, FLAGS.vocab_size)
                 pos_train = [ground_truth[i] for i in range(len(ground_truth))]
                 neg_train = [output_summary[i] for i in range(len(output_summary))]
-                for epoch in range(max_epoch):
+                for _ in range(max_epoch):
                     dis_loader.load_data(pos_train, neg_train)
                     dis_loader.reset_pointer()
                     # train for 1 epoch

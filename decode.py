@@ -117,7 +117,10 @@ class BeamSearchDecoder(object):
             except ValueError:
                 decoded_words = decoded_words
 
-            decoded_words = [str(word, encoding='utf-8') for word in decoded_words]
+            for i in range(len(decoded_words)):
+                if not type(decoded_words[i]) is str:
+                    decoded_words[i] = str(decoded_words[i], encoding='utf-8')
+
             decoded_output = " ".join(decoded_words)  # single string
 
             if FLAGS.single_pass:
