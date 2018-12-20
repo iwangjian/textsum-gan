@@ -1,1 +1,0 @@
-CUDA_VISIBLE_DEVICES=0,1 python seqGAN.py --mode=train --data_path ./data/train.bin --vocab_path ./data/vocab --log_root ./log/ --pretrain_dis_data_path ./data/discriminator_train_data.npz
