@@ -17,7 +17,7 @@ tf.app.flags.DEFINE_string('data_path', '', 'Path expression to tf.Example dataf
                            Can include wildcards to access multiple datafiles.')
 tf.app.flags.DEFINE_string('vocab_path', '', 'Path expression to text vocabulary file.')
 tf.app.flags.DEFINE_string('log_root', 'log', 'Root directory for all logging.')
-tf.app.flags.DEFINE_string('pretrain_dis_data_path', 'Dis_train_data.npz','path for the pretrain dis')
+tf.app.flags.DEFINE_string('pretrain_dis_data_path', '', 'Data path for pretraining discriminator')
 
 # Important settings
 tf.app.flags.DEFINE_string('mode', 'train', 'must be one of pretrain/train/decode')
