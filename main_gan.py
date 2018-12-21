@@ -10,11 +10,6 @@ import trainer as trainer
 import util
 import tensorflow as tf
 
-
-# GPU config
-#config = tf.ConfigProto(allow_soft_placement=True)
-#config.gpu_options.allow_growth = True
-
 tf.logging.set_verbosity(tf.logging.INFO)
 
 # Data dirs
@@ -203,7 +198,7 @@ def main(args):
     elif hps.mode == 'decode':
         # The model is configured with max_dec_steps=1 because we only ever run one step of
         # the decoder at a time (to do beam search).
-        decode_model_hps = hps
+        decode_model_hps = hps._replace(max_dec_steps=1)
         generator = Generator(decode_model_hps, vocab)
         decoder = BeamSearchDecoder(generator, generator_batcher, vocab)
         decoder.decode()

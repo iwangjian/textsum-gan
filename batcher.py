@@ -317,7 +317,8 @@ class Batcher(object):
                 else:
                     raise Exception("single_pass mode is off but the example generator is out of data; error.")
             # Use the <s> and </s> tags in abstract to get a list of sentences.
-            #print("abstract:\n", abstract)
+            article = str(article, encoding='utf-8')
+            abstract = str(abstract, encoding='utf-8')
             abstract_sentences = [sent.strip() for sent in data.abstract2sents(str(abstract))]
             example = Example(article, abstract_sentences, self._vocab, self._hps)  # Process into an Example.
             self._example_queue.put(example)  # place the Example in the example queue.

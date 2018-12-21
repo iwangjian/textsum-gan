@@ -28,7 +28,7 @@ def pretrain_generator(generator, generator_batcher, summary_writer, session):
         train_step = result_train['global_step']
         summary_writer.add_summary(summaries, train_step)
         print("global step: %d train loss: %.3f time: %.3f s" % (global_step, loss, time.time() - t0))
-        if loss < 1e-6:
+        if loss < 1e-2:
             break
 
 
@@ -55,8 +55,8 @@ def pretrain_discriminator(discriminator, sess):
         else:
             pos_train.append(pos_summary[i][:FLAGS.max_dec_steps])
             neg_train.append(neg_summary[i][:FLAGS.max_dec_steps])
-    print("len train:", len(pos_train))
-    print("len val:", len(pos_val))
+    print("length train:", len(pos_train))
+    print("length val:", len(pos_val))
 
     for epoch in tqdm(range(train_max_epoch)):
         # training process

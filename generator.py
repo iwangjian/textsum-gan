@@ -52,7 +52,7 @@ class Generator(object):
             self._max_art_oovs = tf.placeholder(tf.int32, [], name='max_art_oovs')
 
         if FLAGS.seqgan:
-            self.D_reward = tf.placeholder(shape=[hps.batch_size, hps.max_dec_steps], dtype=tf.float32)
+            self.D_reward = tf.placeholder(shape=[hps.batch_size, FLAGS.max_dec_steps], dtype=tf.float32)
             self.rouge_reward = tf.placeholder(shape=[hps.batch_size, 1], dtype=tf.float32)
 
         # decoder part
@@ -224,7 +224,7 @@ class Generator(object):
         Make the vocab metadata file, then make the projector config file pointing to it."""
         train_dir = os.path.join(FLAGS.log_root, "train")
         vocab_metadata_path = os.path.join(train_dir, "vocab_metadata.tsv")
-        self._vocab.write_metadata(vocab_metadata_path)  # write metadata file
+        # self._vocab.write_metadata(vocab_metadata_path)  # write metadata file
         summary_writer = tf.summary.FileWriter(train_dir)
         config = projector.ProjectorConfig()
         embedding = config.embeddings.add()
@@ -249,8 +249,8 @@ class Generator(object):
                                             initializer=self.trunc_norm_init)
                 if hps.mode == "train" or hps.mode == "pretrain":
                     self._add_emb_vis(self.embedding)  # add to tensorboard
-                emb_enc_inputs = tf.nn.embedding_lookup(self.embedding,
-                                                        self._enc_batch)  # tensor with shape (batch_size, max_enc_steps, emb_size)
+
+                emb_enc_inputs = tf.nn.embedding_lookup(self.embedding, self._enc_batch)  # tensor with shape (batch_size, max_enc_steps, emb_size)
                 emb_dec_inputs = [tf.nn.embedding_lookup(self.embedding, x)
                                   for x in tf.unstack(self._dec_batch, axis=1)]  # list length max_dec_steps containing shape (batch_size, emb_size)
 
@@ -319,9 +319,9 @@ class Generator(object):
                     self._ML_loss = self._mask_and_avg(loss_per_step, self._dec_padding_mask)
                     sample_loss_with_reward = tf.expand_dims(self.rouge_reward, dim=1) * tf.stack(sample_loss_per_step, axis=1)
                     self._RL_loss = self._mask_and_avg(tf.unstack(sample_loss_with_reward, axis=1), self._dec_padding_mask)
-                    if hps.seqgan:
-                        _roll_mask = [0.]*hps.max_dec_steps
-                        for i in range(1, hps.max_dec_steps - 40, 6):
+                    if FLAGS.seqgan:
+                        _roll_mask = [0.] * FLAGS.max_dec_steps
+                        for i in range(1, FLAGS.max_dec_steps, 4):
                             _roll_mask[i] = 1.
                         roll_mask = tf.constant([_roll_mask]*self._hps.batch_size)
 
@@ -427,7 +427,7 @@ class Generator(object):
             def run_once():
                 rollout_token = []
                 # modifying
-                for given_number in tqdm(range(1, hps.max_dec_steps, 4)):
+                for given_number in tqdm(range(1, FLAGS.max_dec_steps, 4)):
                     out_state = [self.state_list[given_number]]*(int(self._hps.rollout/2))
 
                     output_token = tensor_array_ops.TensorArray(dtype=tf.int32, size=FLAGS.max_dec_steps,
@@ -437,7 +437,7 @@ class Generator(object):
                         output_token = output_token.write(i, [self.output_token[i]]*(int(self._hps.rollout/2)))
 
                     time_step, output_token, given_number, out_state = control_flow_ops.while_loop(
-                            cond=lambda time_step, _1, _2, _3: time_step < hps.max_dec_steps - given_number,
+                            cond=lambda time_step, _1, _2, _3: time_step < FLAGS.max_dec_steps - given_number,
                             body=reward_recurrence,
                             loop_vars=(np.int32(0),
                                        output_token,
@@ -468,8 +468,7 @@ class Generator(object):
             self._add_train_op()
             self._rollout()
         self._summaries = tf.summary.merge_all()
-        t1 = time.time()
-        tf.logging.info('Time to build graph: %i seconds', t1 - t0)
+        tf.logging.info('Time to build graph: %i seconds', time.time() - t0)
 
     def run_train_step(self, sess, batch):
         """Runs one training iteration.

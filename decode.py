@@ -69,7 +69,8 @@ class BeamSearchDecoder(object):
             self._decode_dir = os.path.join(FLAGS.log_root, "decode")
 
         # Make the decode dir if necessary
-        if not os.path.exists(self._decode_dir): os.mkdir(self._decode_dir)
+        if not os.path.exists(self._decode_dir):
+            os.mkdir(self._decode_dir)
 
         if FLAGS.single_pass:
             # Make the dirs to contain output written in the correct format for pyrouge
@@ -81,7 +82,9 @@ class BeamSearchDecoder(object):
             if not os.path.exists(self._rouge_article_dir): os.mkdir(self._rouge_article_dir)
 
     def decode(self):
-        """Decode examples until data is exhausted (if FLAGS.single_pass) and return, or decode indefinitely, loading latest checkpoint at regular intervals"""
+        """Decode examples until data is exhausted (if FLAGS.single_pass) and return, or decode indefinitely,
+         loading latest checkpoint at regular intervals
+         """
         t0 = time.time()
         counter = 0
         while True:
@@ -95,13 +98,12 @@ class BeamSearchDecoder(object):
                 rouge_log(results_dict, self._decode_dir)
                 return
 
-            original_article = str(batch.original_articles[0], encoding='utf-8')  # string
+            original_article = batch.original_articles[0] # string
             original_abstract = batch.original_abstracts[0]  # string
             original_abstract_sents = batch.original_abstracts_sents[0]  # list of strings
             article_withunks = data.show_art_oovs(original_article, self._vocab)  # string
             abstract_withunks = data.show_abs_oovs(original_abstract, self._vocab,
                                                    (batch.art_oovs[0] if FLAGS.pointer_gen else None))  # string
-
             # Run beam search to get best Hypothesis
             best_hyp = beam_search.run_beam_search(self._sess, self._model, self._vocab, batch)
 
