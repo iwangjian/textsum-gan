@@ -187,15 +187,11 @@ class Generator(object):
             attn_dists = [(1 - p_gen) * dist for (p_gen, dist) in zip(p_gens, attn_dists)]
 
             # Concatenate some zeros to each vocabulary dist, to hold the probabilities for in-article OOV words
-            extended_vsize = self._vocab.size() + self._max_art_oovs  # the maximum (over the batch) size of the extended vocabulary
+            extended_vsize = self._vocab.size() + self._max_art_oovs
             extra_zeros = tf.zeros((self._hps.batch_size*multi_batch_num, self._max_art_oovs))
             vocab_dists_extended = [tf.concat(axis=1, values=[dist, extra_zeros]) for dist in
                                     vocab_dists]  # list length max_dec_steps of shape (batch_size, extended_vsize)
 
-            # Project the values in the attention distributions onto the appropriate entries in the final distributions
-            # This means that if a_i = 0.1 and the ith encoder word is w, and w has index 500 in the vocabulary, then we add 0.1 onto the 500th entry of the final distribution
-            # This is done for each decoder timestep.
-            # This is fiddly; we use tf.scatter_nd to do the projection
             batch_nums = tf.range(0, limit=self._hps.batch_size*multi_batch_num)  # shape (batch_size)
             batch_nums = tf.expand_dims(batch_nums, 1)  # shape (batch_size, 1)
             if multi_batch_num == 1:
@@ -210,9 +206,6 @@ class Generator(object):
             attn_dists_projected = [tf.scatter_nd(indices, copy_dist, shape) for copy_dist in
                                     attn_dists]  # list length max_dec_steps (batch_size, extended_vsize)
 
-            # Add the vocab distributions and the copy distributions together to get the final distributions
-            # final_dists is a list length max_dec_steps; each entry is a tensor shape (batch_size, extended_vsize) giving the final distribution for that decoder timestep
-            # Note that for decoder timesteps and examples corresponding to a [PAD] token, this is junk - ignore.
             final_dists = [vocab_dist + copy_dist for (vocab_dist, copy_dist) in
                            zip(vocab_dists_extended, attn_dists_projected)]
 
@@ -245,14 +238,14 @@ class Generator(object):
 
             # Add embedding matrix (shared by the encoder and decoder inputs)
             with tf.variable_scope('embedding'):
-                self.embedding = tf.get_variable('embedding', [vsize, hps.emb_dim], dtype=tf.float32,
-                                            initializer=self.trunc_norm_init)
+                self.embedding = tf.get_variable('embedding', [vsize, hps.emb_dim],
+                                                 dtype=tf.float32, initializer=self.trunc_norm_init)
                 if hps.mode == "train" or hps.mode == "pretrain":
                     self._add_emb_vis(self.embedding)  # add to tensorboard
 
-                emb_enc_inputs = tf.nn.embedding_lookup(self.embedding, self._enc_batch)  # tensor with shape (batch_size, max_enc_steps, emb_size)
+                emb_enc_inputs = tf.nn.embedding_lookup(self.embedding, self._enc_batch)
                 emb_dec_inputs = [tf.nn.embedding_lookup(self.embedding, x)
-                                  for x in tf.unstack(self._dec_batch, axis=1)]  # list length max_dec_steps containing shape (batch_size, emb_size)
+                                  for x in tf.unstack(self._dec_batch, axis=1)]
 
             # Add the encoder.
             enc_outputs, fw_st, bw_st = self._add_encoder(emb_enc_inputs, self._enc_lens)
@@ -319,19 +312,19 @@ class Generator(object):
                     self._ML_loss = self._mask_and_avg(loss_per_step, self._dec_padding_mask)
                     sample_loss_with_reward = tf.expand_dims(self.rouge_reward, dim=1) * tf.stack(sample_loss_per_step, axis=1)
                     self._RL_loss = self._mask_and_avg(tf.unstack(sample_loss_with_reward, axis=1), self._dec_padding_mask)
-                    if FLAGS.seqgan:
-                        _roll_mask = [0.] * FLAGS.max_dec_steps
-                        for i in range(1, FLAGS.max_dec_steps, 4):
-                            _roll_mask[i] = 1.
-                        roll_mask = tf.constant([_roll_mask]*self._hps.batch_size)
 
+                    if hps.seqgan:
+                        _roll_mask = [0.] * hps.max_dec_steps
+                        for i in range(1, hps.max_dec_steps, 10):
+                            _roll_mask[i] = 1.
+                        roll_mask = tf.constant([_roll_mask] * hps.batch_size)
                         loss_with_reward = self.D_reward*tf.stack(loss_per_step, axis=1)*roll_mask
                         self._GAN_loss = 1. *self._mask_and_avg(tf.unstack(loss_with_reward, axis=1), self._dec_padding_mask)
 
                     tf.summary.scalar('loss', self._ML_loss)
                     tf.summary.scalar('sample_loss', self._RL_loss)
                     tf.summary.scalar('rouge_reward', tf.reduce_mean(self.rouge_reward))
-                    if FLAGS.seqgan:
+                    if hps.seqgan:
                         tf.summary.scalar('D_reward_loss', self._GAN_loss)
                         tf.summary.scalar('D_reward', tf.reduce_mean(self.D_reward))
 
@@ -339,7 +332,7 @@ class Generator(object):
                     tf.summary.scalar('total_loss', self._total_loss)
         if hps.mode == "decode":
             # We run decode beam search mode one decoder step at a time
-            assert len(final_dists) == 1  # final_dists is a singleton list containing shape (batch_size, extended_vsize)
+            assert len(final_dists) == 1
             final_dists = final_dists[0]
             topk_probs, self._topk_ids = tf.nn.top_k(final_dists, hps.batch_size * 2)  # take the k largest probs. note batch_size=beam_size in decode mode
             self._topk_log_probs = tf.log(topk_probs)
@@ -354,7 +347,6 @@ class Generator(object):
         Returns:
           a scalar
         """
-
         dec_lens = tf.reduce_sum(padding_mask, axis=1)  # shape batch_size. float32
         values_per_step = [v * padding_mask[:, dec_step] for dec_step, v in enumerate(values)]
         values_per_ex = sum(values_per_step) / dec_lens  # shape (batch_size); normalized value for each batch member
@@ -379,14 +371,12 @@ class Generator(object):
         tvars = tf.trainable_variables()
         gradients = tf.gradients(loss_to_minimize, tvars, aggregation_method=tf.AggregationMethod.EXPERIMENTAL_TREE)
         grads, global_norm = tf.clip_by_global_norm(gradients, self._hps.max_grad_norm)
-
-        # Add a summary
         tf.summary.scalar('global_norm', global_norm)
 
-        # Apply adagrad optimizer
-        optimizer = tf.train.AdagradOptimizer(self._hps.lr, initial_accumulator_value=self._hps.adagrad_init_acc)
-        self._train_op = optimizer.apply_gradients(zip(grads, tvars), global_step=self.global_step,
-                                                       name='train_step')
+        # Apply optimizer
+        optimizer = tf.train.AdamOptimizer(self._hps.lr)
+        self._train_op = optimizer.apply_gradients(zip(grads, tvars),
+                                                   global_step=self.global_step, name='train_step')
 
     def _rollout(self):
         hps = self._hps
@@ -397,7 +387,7 @@ class Generator(object):
             def reward_recurrence(time_step, output_token, given_number, out_state):
                 input_token = tf.unstack(tf.squeeze(output_token.read(time_step+given_number-1)), axis=0)
                 dec_inut = [tf.nn.embedding_lookup(embedding_extend, ids=input_single_token)
-                                              for input_single_token in input_token]
+                            for input_single_token in input_token]
                 enc_state = self._enc_states
                 enc_pad = self._enc_padding_mask
 
@@ -427,17 +417,17 @@ class Generator(object):
             def run_once():
                 rollout_token = []
                 # modifying
-                for given_number in tqdm(range(1, FLAGS.max_dec_steps, 4)):
-                    out_state = [self.state_list[given_number]]*(int(self._hps.rollout/2))
+                for given_number in tqdm(range(1, hps.max_dec_steps, 10)):
+                    out_state = [self.state_list[given_number]]*(int(hps.rollout/2))
 
                     output_token = tensor_array_ops.TensorArray(dtype=tf.int32, size=FLAGS.max_dec_steps,
                                                                 dynamic_size=False, infer_shape=True,
                                                                 clear_after_read=False)
                     for i in range(given_number):
-                        output_token = output_token.write(i, [self.output_token[i]]*(int(self._hps.rollout/2)))
+                        output_token = output_token.write(i, [self.output_token[i]]*(int(hps.rollout/2)))
 
                     time_step, output_token, given_number, out_state = control_flow_ops.while_loop(
-                            cond=lambda time_step, _1, _2, _3: time_step < FLAGS.max_dec_steps - given_number,
+                            cond=lambda time_step, _1, _2, _3: time_step < hps.max_dec_steps - given_number,
                             body=reward_recurrence,
                             loop_vars=(np.int32(0),
                                        output_token,
@@ -455,7 +445,7 @@ class Generator(object):
             for _ in range(rollout_nums):
                 rollout_output_token_all.append(run_once())
             self.rollout_output_token_all = tf.transpose(tf.concat(rollout_output_token_all, axis=1),
-                                                            perm=[1, 0, 2, 3])
+                                                         perm=[1, 0, 2, 3])
 
     def build_graph(self):
         """Add the placeholders, model, global step, train_op and summaries to the graph"""
@@ -530,7 +520,6 @@ class Generator(object):
            Returns a dictionary containing train op, summaries, loss, global_step and (optionally) coverage loss.
         """
         feed_dict = self._make_feed_dict(batch)
-        print(self.rollout_output_token_all)
         to_return = {
             'rollout_token': self.rollout_output_token_all
         }

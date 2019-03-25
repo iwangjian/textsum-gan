@@ -41,7 +41,7 @@ def pretrain_discriminator(discriminator, sess):
     neg_summary = pretrain_dis_data['neg_summary_idx']
     assert len(pos_summary) == len(neg_summary)
 
-    train_max_epoch = 10  # max training epochs
+    train_max_epoch = 20  # max training epochs
     val_num = 1000  # number of validation samples
     pos_train = []
     neg_train = []
@@ -119,8 +119,14 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
                 target_ = remove_eos(target)
                 sample_ = remove_eos(sample)
                 argmax_ = remove_eos(argmax)
-                r_baseline = rouge.get_scores(argmax_, target_)[0]["rouge-l"]["f"]
-                r_sample = rouge.get_scores(sample_, target_)[0]["rouge-l"]["f"]
+                if len(argmax_) > 0:
+                    r_baseline = rouge.get_scores(argmax_, target_)[0]["rouge-l"]["f"]
+                else:
+                    r_baseline = 0
+                if len(sample_) > 0:
+                    r_sample = rouge.get_scores(sample_, target_)[0]["rouge-l"]["f"]
+                else:
+                    r_sample = 0
                 #print("r_baseline:", r_baseline)
                 #print("r_sample:", r_sample)
                 rouge_rewards.append(r_baseline - r_sample)
@@ -128,9 +134,10 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
             print("RL reward for rouge-L: %.3f" % np.mean(rouge_rewards))
 
             print("running rollout step...")
+            t0 = time.time()
             result_rollout = generator.run_rollout_step(sess, batch)
             rollout_output = result_rollout['rollout_token']  # shape [rollout_num, seqlen(this is number of roll), batch_size, seq_len]
-            print("rollout_output:", rollout_output.shape)
+            print("rollout step: %.3fs" % (time.time() - t0))
 
             # calculate D_reward
             print("start to calculate D_rewards")
@@ -158,12 +165,11 @@ def adversarial_train(generator, discriminator, generator_batcher, discriminator
             ypred = np.array([item[1] for item in ypred_for_auc])
             ypred = np.reshape(ypred, [FLAGS.rollout, -1, FLAGS.batch_size])
             rewards = np.transpose(np.sum(ypred, 0)) / (1.0 * FLAGS.rollout)  # [batch_size, output_max_len// 20]
-            print("rewards:", rewards.shape)
 
             if np.std(rewards) != 0.:
                 rewards = (rewards - np.mean(rewards)) / np.std(rewards)
             D_rewards = np.zeros([FLAGS.batch_size, FLAGS.max_dec_steps])
-            for count, i in enumerate(range(1, FLAGS.max_dec_steps, 4)):
+            for count, i in enumerate(range(1, FLAGS.max_dec_steps, 10)):
                 D_rewards[:, i] = rewards[:, count]
             print("D_rewards:", D_rewards.shape)
 

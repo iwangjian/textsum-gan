@@ -32,7 +32,7 @@ tf.app.flags.DEFINE_boolean('single_pass', False,
 # Hyperparameters
 tf.app.flags.DEFINE_integer('hidden_dim', 256, 'dimension of RNN hidden states')
 tf.app.flags.DEFINE_integer('emb_dim', 128, 'dimension of word embeddings')
-tf.app.flags.DEFINE_integer('batch_size', 16, 'minibatch size')
+tf.app.flags.DEFINE_integer('batch_size', 32, 'minibatch size')
 tf.app.flags.DEFINE_integer('dis_batch_size', 256, 'batch size for pretrain discriminator')
 tf.app.flags.DEFINE_integer('max_enc_steps', 400, 'max timesteps of encoder (max source text tokens)')
 tf.app.flags.DEFINE_integer('max_dec_steps', 100, 'max timesteps of decoder (max summary tokens)')
@@ -43,8 +43,7 @@ tf.app.flags.DEFINE_integer('vocab_size', 50000,
                             'Size of vocabulary. These will be read from the vocabulary file in order. \
                             If the vocabulary file contains fewer words than this number, or if this number is \
                             set to 0, will take all words in the vocabulary file.')
-tf.app.flags.DEFINE_float('lr', 0.01, 'learning rate')
-tf.app.flags.DEFINE_float('adagrad_init_acc', 0.1, 'initial accumulator value for Adagrad')
+tf.app.flags.DEFINE_float('lr', 0.001, 'learning rate')
 tf.app.flags.DEFINE_float('rand_unif_init_mag', 0.02, 'magnitude for lstm cells random uniform inititalization')
 tf.app.flags.DEFINE_float('trunc_norm_init_std', 1e-4, 'std of trunc norm init, used for initializing everything else')
 tf.app.flags.DEFINE_float('max_grad_norm', 2.0, 'for gradient clipping')
@@ -53,7 +52,6 @@ tf.app.flags.DEFINE_integer('rollout', 24, 'Size of rollout number')
 # Pointer-generator or baseline model
 tf.app.flags.DEFINE_boolean('pointer_gen', True, 'If True, use pointer-generator model. If False, use baseline model.')
 tf.app.flags.DEFINE_boolean('seqgan', True, 'If False disable seqgan')
-tf.app.flags.DEFINE_boolean('pretrain_discriminator', True, 'If False disable seqgan')
 
 # Coverage hyperparameters
 tf.app.flags.DEFINE_boolean('coverage', False,
@@ -61,15 +59,10 @@ tf.app.flags.DEFINE_boolean('coverage', False,
                             WITHOUT coverage until converged, and then train for a short phase WITH coverage afterwards. \
                              i.e. to reproduce the results in the ACL paper, turn this off for most of training then \
                               turn on for a short phase at the end.')
-tf.app.flags.DEFINE_float('cov_loss_wt', 1.0,
-                          'Weight of coverage loss (lambda in the paper). If zero, then no incentive to minimize coverage loss.')
+tf.app.flags.DEFINE_float('cov_loss_wt', 1.0, 'Weight of coverage loss. If zero, then no incentive \
+                           to minimize coverage loss.')
 
 # Utility flags, for restoring and changing checkpoints
-tf.app.flags.DEFINE_boolean('convert_to_coverage_model', False,
-                            'Convert a non-coverage model to a coverage model. Turn this on and run in train mode. \
-                            Your current training model will be copied to a new version \
-                             (same name with _cov_init appended) that will be ready to run with coverage flag turned on, \
-                              for the coverage training stage.')
 tf.app.flags.DEFINE_boolean('restore_best_model', False,
                             'Restore the best model in the eval/ dir and save it in the train/ dir, ready to be \
                              used for further training. Useful for early stopping, or if your training checkpoint \
@@ -81,7 +74,7 @@ FLAGS = tf.app.flags.FLAGS
 def prepare_hps():
     hparam_list = ['mode', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps',
                    'coverage', 'cov_loss_wt', 'pointer_gen', 'seqgan', 'rollout','lr',
-                   'adagrad_init_acc', 'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm',]
+                   'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm']
     hps_dict = {}
     for key, val in FLAGS.__flags.items():
         if key in hparam_list:
@@ -162,8 +155,7 @@ def setup_training(mode, generator, discriminator, generator_batcher, discrimina
         if mode == "pretrain":
             trainer.pretrain_generator(generator, generator_batcher, summary_writer, sess_context_manager)
         elif mode == "train":
-            if FLAGS.pretrain_discriminator:
-                trainer.pretrain_discriminator(discriminator, sess_context_manager)
+            trainer.pretrain_discriminator(discriminator, sess_context_manager)
             trainer.adversarial_train(generator, discriminator, generator_batcher, discriminator_batcher,
                                       summary_writer, sess_context_manager)
         else:
