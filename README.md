@@ -18,17 +18,18 @@ You can use the python package manager of your choice (pip/conda) to install the
 
     Please follow the instructions [here](https://github.com/abisee/cnn-dailymail) for downloading and preprocessing the CNN/DailyMail dataset. After that, store data files ```train.bin```, ```val.bin```, ```test.bin``` and vocabulary file ```vocab``` into specified data directory, e.g. ```./data/```
 
-* Prepare negative samples for discriminator
-    You can download the generated data ```discriminator_train_data.npz``` for discriminator from [dropbox](https://www.dropbox.com/s/i1otqkrsgup63pt/discriminator_train_data.npz?dl=0). Meanwhile, you can follow the instructions below to prepare negative samples by yourself: 
+* Prepare negative samples for discriminator 
+
+    You can download the generated data ```discriminator_train_data.npz``` for discriminator from [dropbox](https://www.dropbox.com/s/i1otqkrsgup63pt/discriminator_train_data.npz?dl=0). Meanwhile, you can follow the instructions below to prepare negative samples by yourself.
+    
     Firstly, pretrain generator for some steps:
     ```
     python3 main.py --mode=pretrain --data_path=./data/train.bin --vocab_path=./data/vocab --log_root=./log --restore_best_model=False
     ```
-    After pretraining some steps, stop it, then restore the model for training:
+    After pretraining some steps, stop it, then restore the model for training (**NOTE:** Set ```restore_best_model``` as ```True``` this step):
     ```
     python3 main.py --mode=pretrain --data_path=./data/train.bin --vocab_path=./data/vocab --log_root=./log --restore_best_model=True
     ```
-    (**NOTE:** Set ```restore_best_model``` as ```True``` this step)
     Secondly, decode training data using pretrained generator:
     ```
     python3 main.py --mode=decode --data_path=./data/train.bin --vocab_path=./data/vocab --log_root=./log --single_pass=True
