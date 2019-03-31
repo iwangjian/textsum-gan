@@ -1,8 +1,8 @@
-﻿# textsum-gan
+﻿# GAN for Text Summarization
 
 Tensorflow re-implementation of "[Generative Adversarial Network for Abstractive Text Summarization](https://www.aaai.org/ocs/index.php/AAAI/AAAI18/paper/view/16238/16492)" (AAAI-18).
 
-## Dependencies
+## Requirements
 * Python3 (tested on Python 3.6)
 * Tensorflow >= 1.4 (tested on Tensorflow 1.4.1)
 * numpy
@@ -13,7 +13,7 @@ Tensorflow re-implementation of "[Generative Adversarial Network for Abstractive
 
 You can use the python package manager of your choice (pip/conda) to install the dependencies. The code is tested on Ubuntu 16.04 operating system.
 
-## Quick Start
+## Quickstart
 * Dataset
 
     Please follow the instructions [here](https://github.com/abisee/cnn-dailymail) for downloading and preprocessing the CNN/DailyMail dataset. After that, store data files ```train.bin```, ```val.bin```, ```test.bin``` and vocabulary file ```vocab``` into specified data directory, e.g. ```./data/```
