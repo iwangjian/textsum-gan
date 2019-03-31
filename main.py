@@ -73,7 +73,7 @@ FLAGS = tf.app.flags.FLAGS
 
 def prepare_hps():
     hparam_list = ['mode', 'hidden_dim', 'emb_dim', 'batch_size', 'max_dec_steps', 'max_enc_steps',
-                   'coverage', 'cov_loss_wt', 'pointer_gen', 'seqgan', 'rollout','lr',
+                   'coverage', 'cov_loss_wt', 'pointer_gen', 'seqgan', 'rollout', 'lr',
                    'rand_unif_init_mag', 'trunc_norm_init_std', 'max_grad_norm']
     hps_dict = {}
     for key, val in FLAGS.__flags.items():
