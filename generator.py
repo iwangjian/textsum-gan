@@ -288,15 +288,14 @@ class Generator(object):
                 self.output_sample_token = []
                 with tf.variable_scope('loss'):
                     # Calculate the loss per step
-                    # This is fiddly; we use tf.gather_nd to pick out the probabilities of the gold target words
-                    loss_per_step = []  # will be list length max_dec_steps containing shape (batch_size)
+                    # we use tf.gather_nd to pick out the probabilities of the gold target words
+                    loss_per_step = []  # length max_dec_steps containing shape (batch_size)
                     sample_loss_per_step = []
                     batch_nums = tf.range(0, limit=hps.batch_size)  # shape (batch_size)
                     for dec_step, dist in enumerate(final_dists):
-                        targets = self._target_batch[:, dec_step]  # The indices of the target words. shape (batch_size)
+                        targets = self._target_batch[:, dec_step]  # The indices of the target words, shape (batch_size)
                         indices = tf.stack((batch_nums, targets), axis=1)  # shape (batch_size, 2)
-                        gold_probs = tf.gather_nd(dist,
-                                                  indices)  # shape (batch_size). prob of correct words on this step
+                        gold_probs = tf.gather_nd(dist, indices)  # prob of correct words on this step, shape (batch_size)
                         _, max_prob_ind = tf.nn.top_k(dist, 1)
                         self.output_token.append(max_prob_ind)  # shape [[ batch_size, 1]* max_dec_steps]
 
@@ -318,7 +317,7 @@ class Generator(object):
                         for i in range(1, hps.max_dec_steps, 10):
                             _roll_mask[i] = 1.
                         roll_mask = tf.constant([_roll_mask] * hps.batch_size)
-                        loss_with_reward = self.D_reward*tf.stack(loss_per_step, axis=1)*roll_mask
+                        loss_with_reward = self.D_reward*tf.stack(sample_loss_per_step, axis=1)*roll_mask
                         self._GAN_loss = 1. *self._mask_and_avg(tf.unstack(loss_with_reward, axis=1), self._dec_padding_mask)
 
                     tf.summary.scalar('loss', self._ML_loss)
