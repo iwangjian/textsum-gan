@@ -317,7 +317,7 @@ class Generator(object):
                         for i in range(1, hps.max_dec_steps, 10):
                             _roll_mask[i] = 1.
                         roll_mask = tf.constant([_roll_mask] * hps.batch_size)
-                        loss_with_reward = self.D_reward*tf.stack(sample_loss_per_step, axis=1)*roll_mask
+                        loss_with_reward = tf.expand_dims(self.D_reward, 2)*tf.stack(sample_loss_per_step, axis=1)*tf.expand_dims(roll_mask, 2)
                         self._GAN_loss = 1. *self._mask_and_avg(tf.unstack(loss_with_reward, axis=1), self._dec_padding_mask)
 
                     tf.summary.scalar('loss', self._ML_loss)
